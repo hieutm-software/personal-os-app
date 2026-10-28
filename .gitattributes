@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.sql text eol=lf
+*.rs text eol=lf
+*.ts text eol=lf
+*.svelte text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
