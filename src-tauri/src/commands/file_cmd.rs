@@ -601,6 +601,25 @@ pub async fn open_in_os(
 }
 
 #[tauri::command]
+pub async fn get_absolute_paths(
+    app: AppHandle,
+    target_paths: Vec<String>,
+    base_path: Option<String>,
+) -> Result<Vec<String>, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let mut abs_paths = Vec::with_capacity(target_paths.len());
+        for p in target_paths {
+            let local = fs_service::get_local_path(&app, &p, base_path.as_deref())?;
+            if local.exists() {
+                abs_paths.push(local.to_string_lossy().to_string());
+            }
+        }
+        Ok(abs_paths)
+    })
+    .await?
+}
+
+#[tauri::command]
 pub async fn create_folder(
     app: AppHandle,
     _provider: Option<String>,

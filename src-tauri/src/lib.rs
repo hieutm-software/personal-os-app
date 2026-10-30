@@ -73,6 +73,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let handle = app.handle().clone();
             if let Some(window) = app.get_webview_window("main") {
@@ -186,6 +187,7 @@ pub fn run() {
             commands::file_cmd::cleanup_documents_trash,
             commands::file_cmd::empty_documents_trash,
             commands::file_cmd::scan_document_tree,
+            commands::file_cmd::get_absolute_paths,
             commands::system_cmd::get_system_metrics
         ])
         .run(tauri::generate_context!())

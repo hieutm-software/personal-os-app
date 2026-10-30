@@ -521,3 +521,30 @@ export async function scanDocumentTree(
     return [];
   }
 }
+
+export async function getAbsolutePaths(
+  targetPaths: string[],
+  basePath?: string | null
+): Promise<string[]> {
+  try {
+    const validPaths = targetPaths
+      .map((p) => {
+        try {
+          return validateRelativeStoragePath(p);
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is string => Boolean(p));
+
+    if (validPaths.length === 0) return [];
+
+    const results = await invoke<string[]>("get_absolute_paths", {
+      targetPaths: validPaths,
+      basePath: sanitizeOptionalBasePath(basePath),
+    });
+    return Array.isArray(results) ? results : [];
+  } catch {
+    return [];
+  }
+}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import {
     FileText,
     Save,
@@ -40,6 +40,9 @@
     onSaved?: (newPath: string, newName: string) => void;
   } = $props();
 
+  const MAX_FILE_STEM_LENGTH = 200;
+  const INVALID_FILENAME_CHARS_PATTERN = /[<>:"/\\|?*\u0000-\u001F\u007F]/;
+  const RESERVED_WINDOWS_NAMES_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
   const CHECKLIST_PREFIX_REGEX = /^(\s*[-*+]\s+\[[ xX]\]\s*)/;
   const BULLET_PREFIX_REGEX = /^(\s*[-*+]\s+(?!\[[ xX]\]))/;
   const QUOTE_PREFIX_REGEX = /^(\s*>\s?)/;
@@ -53,8 +56,9 @@
 
   let content = $state("");
   let initialContent = $state("");
-  let currentFileName = $state("");
-  let initialFileName = $state("");
+  let currentFileStem = $state("");
+  let initialFileStem = $state("");
+  let fileExtension = $state(".md");
   let currentFilePath = $state("");
   let isLoading = $state(false);
   let isSaving = $state(false);
@@ -65,6 +69,44 @@
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
   let textareaRef = $state<HTMLTextAreaElement | null>(null);
   let previewRef = $state<HTMLDivElement | null>(null);
+
+  function splitFileNameAndExt(rawName: string): { stem: string; ext: string } {
+    const trimmed = rawName.trim();
+    const lastDot = trimmed.lastIndexOf(".");
+    if (lastDot > 0 && lastDot < trimmed.length - 1) {
+      return {
+        stem: trimmed.slice(0, lastDot),
+        ext: trimmed.slice(lastDot),
+      };
+    }
+    return {
+      stem: trimmed || "Untitled",
+      ext: ".md",
+    };
+  }
+
+  function normalizeStem(rawStem: string, ext: string): string {
+    let cleaned = rawStem.trim();
+    if (ext && cleaned.toLowerCase().endsWith(ext.toLowerCase()) && cleaned.length > ext.length) {
+      cleaned = cleaned.slice(0, cleaned.length - ext.length).trim();
+    }
+    return cleaned;
+  }
+
+  function isValidFileStem(rawStem: string, ext: string): boolean {
+    const normalized = normalizeStem(rawStem, ext);
+    if (
+      !normalized ||
+      normalized.length > MAX_FILE_STEM_LENGTH ||
+      normalized === "." ||
+      normalized === ".." ||
+      INVALID_FILENAME_CHARS_PATTERN.test(normalized) ||
+      RESERVED_WINDOWS_NAMES_PATTERN.test(normalized)
+    ) {
+      return false;
+    }
+    return true;
+  }
 
   async function handleCopyNoteContent() {
     try {
@@ -198,7 +240,8 @@
     } catch {}
   }
 
-  const isDirty = $derived(content !== initialContent || currentFileName !== initialFileName);
+  const normalizedCurrentStem = $derived(normalizeStem(currentFileStem, fileExtension));
+  const isDirty = $derived(content !== initialContent || normalizedCurrentStem !== initialFileStem);
   const wordCount = $derived.by(() => {
     const len = content.length;
     if (len === 0) return 0;
@@ -224,12 +267,24 @@
 
   $effect(() => {
     if (isOpen && filePath) {
-      currentFilePath = filePath;
-      currentFileName = fileName || filePath.split("/").pop() || "note.md";
-      initialFileName = currentFileName;
-      loadContent(filePath);
+      const targetPath = filePath;
+      const targetName = fileName;
+      untrack(() => {
+        if (currentFilePath !== targetPath) {
+          currentFilePath = targetPath;
+          const resolvedName = targetName || targetPath.split("/").pop() || "note.md";
+          const { stem, ext } = splitFileNameAndExt(resolvedName);
+          currentFileStem = stem;
+          initialFileStem = stem;
+          fileExtension = ext;
+          loadContent(targetPath);
+        }
+      });
     } else if (!isOpen) {
-      isUnsavedModalOpen = false;
+      untrack(() => {
+        currentFilePath = "";
+        isUnsavedModalOpen = false;
+      });
     }
   });
 
@@ -251,24 +306,32 @@
 
   export async function save(): Promise<boolean> {
     if (isSaving || !currentFilePath) return false;
+    const cleanStem = normalizeStem(currentFileStem, fileExtension);
+    if (!isValidFileStem(cleanStem, fileExtension)) {
+      toastState.add("error", "Invalid file name");
+      return false;
+    }
     isSaving = true;
     try {
       let activePath = currentFilePath;
-      const trimmedName = currentFileName.trim();
-      if (trimmedName && trimmedName !== initialFileName) {
+      const fullNewName = `${cleanStem}${fileExtension}`;
+      if (cleanStem !== initialFileStem) {
         const pathSegments = currentFilePath.split("/");
         pathSegments.pop();
-        const targetPath = pathSegments.length > 0 ? `${pathSegments.join("/")}/${trimmedName}` : trimmedName;
+        const targetPath = pathSegments.length > 0 ? `${pathSegments.join("/")}/${fullNewName}` : fullNewName;
         await moveFile(currentFilePath, targetPath, basePath, true);
         activePath = targetPath;
         currentFilePath = targetPath;
-        initialFileName = trimmedName;
+        initialFileStem = cleanStem;
+        currentFileStem = cleanStem;
+      } else if (currentFileStem !== cleanStem) {
+        currentFileStem = cleanStem;
       }
 
       await writeTextFile(activePath, content, basePath, true);
       initialContent = content;
       toastState.add("success", "Document saved");
-      onSaved?.(activePath, currentFileName);
+      onSaved?.(activePath, fullNewName);
       return true;
     } catch {
       toastState.add("error", "Failed to save document");
@@ -776,18 +839,39 @@
         : 'fixed inset-3 md:inset-8 lg:inset-12 z-modal rounded-2xl p-4 md:p-6'}"
     >
       <header class="flex items-center justify-between gap-3 pb-3 border-b border-border/60 shrink-0">
-        <div class="flex items-center gap-3 min-w-0 flex-1">
+        <div class="flex items-center gap-2.5 min-w-0 flex-1">
           <div class="p-2 rounded-xl bg-primary/10 text-primary border border-primary/20 shrink-0">
             <FileText class="w-5 h-5" />
           </div>
-          <div class="flex-1 min-w-0 max-w-md">
+          <div class="flex items-center gap-1.5 min-w-0 flex-1 max-w-md">
             <input
               type="text"
-              bind:value={currentFileName}
-              placeholder="note-title.md"
-              class="w-full px-2.5 py-1 text-sm md:text-base font-bold bg-transparent hover:bg-muted/30 focus:bg-background border border-transparent focus:border-border rounded-lg outline-none transition-colors truncate"
+              bind:value={currentFileStem}
+              placeholder="Note title..."
+              maxlength={MAX_FILE_STEM_LENGTH}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLInputElement).blur();
+                }
+              }}
+              onblur={() => {
+                const cleaned = normalizeStem(currentFileStem, fileExtension);
+                if (!cleaned) {
+                  currentFileStem = initialFileStem;
+                } else if (cleaned !== currentFileStem) {
+                  currentFileStem = cleaned;
+                }
+              }}
+              class="w-full min-w-[100px] px-2.5 py-1 text-sm md:text-base font-bold bg-transparent hover:bg-muted/30 focus:bg-background border border-transparent focus:border-border rounded-lg outline-none transition-colors truncate"
               title="Click to rename note"
             />
+            <div
+              class="flex items-center gap-1.5 bg-primary/10 text-primary border border-primary/20 text-xs font-semibold px-2.5 py-1.5 rounded-lg font-mono tracking-wide shrink-0 select-none"
+              title="File format ({fileExtension})"
+            >
+              {fileExtension}
+            </div>
           </div>
           {#if isDirty}
             <span class="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20 shrink-0 font-medium leading-none">

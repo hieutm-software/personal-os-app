@@ -65,6 +65,7 @@
     createNewFileApi,
     deleteFile,
     emptyDocumentsTrashApi,
+    getAbsolutePaths,
     getDraggedItemsContents,
     listDirectoryFiles,
     moveFile,
@@ -79,6 +80,7 @@
     type DirectoryFile,
     type DocumentTreeEntry,
   } from "./api";
+  import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
   interface MixedItem {
     type: "folder" | "document";
@@ -152,8 +154,36 @@
   let newFolderName = $state("");
 
   let renameFolderOpen = $state(false);
-  let folderToRename = $state<{ id: string; name: string } | null>(null);
+  let folderToRename = $state<{
+    id: string;
+    name: string;
+    isFolder?: boolean;
+    extension?: string;
+  } | null>(null);
   let renameFolderName = $state("");
+
+  function splitFileStemAndExt(rawName: string): { stem: string; ext: string } {
+    const trimmed = rawName.trim();
+    const lastDot = trimmed.lastIndexOf(".");
+    if (lastDot > 0 && lastDot < trimmed.length - 1) {
+      return {
+        stem: trimmed.slice(0, lastDot),
+        ext: trimmed.slice(lastDot),
+      };
+    }
+    return {
+      stem: trimmed,
+      ext: "",
+    };
+  }
+
+  function normalizeRenamedStem(rawStem: string, ext: string): string {
+    let cleaned = rawStem.trim();
+    if (ext && cleaned.toLowerCase().endsWith(ext.toLowerCase()) && cleaned.length > ext.length) {
+      cleaned = cleaned.slice(0, cleaned.length - ext.length).trim();
+    }
+    return cleaned;
+  }
 
   let isEditorOpen = $state(false);
   let editorFilePath = $state("");
@@ -459,6 +489,16 @@
     let unlistenFsChangedPromise: Promise<UnlistenFn> | null = null;
     let unlistenDragDropPromise: Promise<UnlistenFn> | null = null;
 
+    const isInternalDocPath = (p: string): boolean => {
+      if (!p) return false;
+      const normalized = p.replace(/\\/g, "/").toLowerCase();
+      const baseNorm = (customBasePath || "").replace(/\\/g, "/").toLowerCase();
+      if (baseNorm && normalized.startsWith(baseNorm)) {
+        return true;
+      }
+      return normalized.includes("/docs/") || normalized.includes("personalos");
+    };
+
     const handlePathChanged = (): void => {
       (async () => {
         try {
@@ -513,18 +553,184 @@
         try {
           if (!isMounted) return;
           const payloadType = event.payload.type;
+
+          const isInternal =
+            isOutboundDragging ||
+            isDraggingInternalFile ||
+            isCurrentDragSessionInternal ||
+            activePointerId !== null ||
+            pendingDragItems.length > 0 ||
+            outboundDragItems.length > 0 ||
+            (payloadType === "enter" &&
+              event.payload.paths &&
+              event.payload.paths.some(isInternalDocPath));
+
+          if (isInternal) {
+            isCurrentDragSessionInternal = true;
+            isOutboundDragging = true;
+            isDraggingInternalFile = true;
+            isDragging = false;
+            // Our own files being dragged from Personal OS:
+            // NEVER show the "Drop files to upload" overlay!
+            if (payloadType === "enter" || payloadType === "over") {
+              let foundFolderId: string | null = null;
+              let foundFolderName: string | null = null;
+              let foundType: "tree" | "table" | "breadcrumb" | null = null;
+              let clientX = 0;
+              let clientY = 0;
+
+              if (event.payload.position) {
+                clientX = event.payload.position.x / window.devicePixelRatio;
+                clientY = event.payload.position.y / window.devicePixelRatio;
+
+                if (
+                  clientX >= 0 &&
+                  clientX <= window.innerWidth &&
+                  clientY >= 0 &&
+                  clientY <= window.innerHeight
+                ) {
+                  const elem = document.elementFromPoint(clientX, clientY);
+                  const dropTarget = elem?.closest<HTMLElement>("[data-drop-folder]");
+                  if (dropTarget) {
+                    const folderId = dropTarget.dataset.dropFolder;
+                    if (folderId === "trash") {
+                      foundFolderId = "trash";
+                      foundFolderName = "Trash";
+                      foundType = "table";
+                      dragHoverId = "trash";
+                      dragOverTreePath = null;
+                      dragBreadcrumbId = null;
+                    } else if (folderId) {
+                      const itemsToCheck = outboundDragItems.length > 0 ? outboundDragItems : pendingDragItems;
+                      const isDraggingThis = itemsToCheck.some(
+                        (it) => it.id === folderId || folderId.startsWith(it.id + "/")
+                      );
+                      if (!isDraggingThis) {
+                        foundFolderId = folderId;
+                        foundFolderName =
+                          dropTarget.dataset.dropName ||
+                          (folderId === "docs"
+                            ? "Documents"
+                            : folderId.split("/").pop() || folderId);
+                        foundType = dropTarget.closest("[data-tree-sidebar]")
+                          ? "tree"
+                          : dropTarget.closest("[data-breadcrumbs]")
+                            ? "breadcrumb"
+                            : "table";
+
+                        if (foundType === "tree") {
+                          dragOverTreePath =
+                            folderId === "docs"
+                              ? "root"
+                              : folderId.replace(/^docs\//, "");
+                          dragHoverId = null;
+                          dragBreadcrumbId = null;
+                        } else if (foundType === "breadcrumb") {
+                          dragBreadcrumbId =
+                            folderId === "docs"
+                              ? "root"
+                              : folderId.replace(/^docs\//, "");
+                          dragHoverId = null;
+                          dragOverTreePath = null;
+                        } else {
+                          dragHoverId = folderId;
+                          dragOverTreePath = null;
+                          dragBreadcrumbId = null;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              if (!foundFolderId) {
+                dragOverTreePath = null;
+                dragHoverId = null;
+                dragBreadcrumbId = null;
+              }
+
+              const items = outboundDragItems.length > 0 ? outboundDragItems : pendingDragItems;
+              if (
+                items.length > 0 &&
+                clientX >= 0 &&
+                clientX <= window.innerWidth &&
+                clientY >= 0 &&
+                clientY <= window.innerHeight
+              ) {
+                pointerDragState = {
+                  isDragging: true,
+                  items,
+                  startX: 0,
+                  startY: 0,
+                  currentX: clientX,
+                  currentY: clientY,
+                  targetFolderId: foundFolderId,
+                  targetFolderName: foundFolderName,
+                  targetFolderType: foundType,
+                };
+              } else {
+                pointerDragState = null;
+              }
+              return;
+            } else if (payloadType === "leave") {
+              pointerDragState = null;
+              dragOverTreePath = null;
+              dragHoverId = null;
+              dragBreadcrumbId = null;
+              return;
+            } else if (payloadType === "drop") {
+              pointerDragState = null;
+              const itemsToMove = outboundDragItems.length > 0 ? outboundDragItems : pendingDragItems;
+              if (event.payload.position && itemsToMove.length > 0) {
+                const clientX = event.payload.position.x / window.devicePixelRatio;
+                const clientY = event.payload.position.y / window.devicePixelRatio;
+                const elem = document.elementFromPoint(clientX, clientY);
+                const dropTarget = elem?.closest<HTMLElement>("[data-drop-folder]");
+                if (dropTarget) {
+                  const targetFolderId = dropTarget.dataset.dropFolder;
+                  if (targetFolderId === "trash") {
+                    await moveToTrash([...itemsToMove]);
+                  } else if (targetFolderId) {
+                    const isDraggingThis = itemsToMove.some(
+                      (it) => it.id === targetFolderId || targetFolderId.startsWith(it.id + "/")
+                    );
+                    if (!isDraggingThis) {
+                      await safeInternalMove([...itemsToMove], targetFolderId);
+                    }
+                  }
+                }
+              }
+              resetAllDragStates();
+              return;
+            } else {
+              pointerDragState = null;
+              dragOverTreePath = null;
+              dragHoverId = null;
+              dragBreadcrumbId = null;
+              return;
+            }
+          }
+
+          // ONLY FOR EXTERNAL FILES FROM WINDOWS EXPLORER:
           if (payloadType === "enter" || payloadType === "over") {
             if (activeTab === "active") {
               isDragging = true;
             }
           } else if (payloadType === "drop") {
             isDragging = false;
+            dragOverTreePath = null;
+            dragHoverId = null;
+            dragBreadcrumbId = null;
+
             if (activeTab !== "active") return;
             const paths = event.payload.paths;
             if (!paths || paths.length === 0) return;
             await uploadPathsList(paths);
           } else {
             isDragging = false;
+            dragOverTreePath = null;
+            dragHoverId = null;
+            dragBreadcrumbId = null;
           }
         } catch {}
       });
@@ -547,20 +753,207 @@
     } catch {}
 
     const handleGlobalDragEnd = (): void => {
-      dragOverTreePath = null;
-      dragHoverId = null;
-      dragBreadcrumbId = null;
-      isDragging = false;
+      if (isOutboundDragging || isDraggingInternalFile) {
+        return;
+      }
+      resetAllDragStates();
     };
+
+    const handleWindowDragOver = (e: DragEvent): void => {
+      try {
+        const isInternal =
+          isOutboundDragging ||
+          isDraggingInternalFile ||
+          isCurrentDragSessionInternal ||
+          outboundDragItems.length > 0;
+
+        if (!isInternal) return;
+
+        e.preventDefault();
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = "copy";
+        }
+        isDragging = false;
+
+        const items = outboundDragItems.length > 0 ? outboundDragItems : pendingDragItems;
+        if (items.length === 0) return;
+
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+
+        let foundFolderId: string | null = null;
+        let foundFolderName: string | null = null;
+        let foundType: "tree" | "table" | "breadcrumb" | null = null;
+
+        const elem = document.elementFromPoint(clientX, clientY);
+        const dropTarget = elem?.closest<HTMLElement>("[data-drop-folder]");
+
+        if (dropTarget) {
+          const folderId = dropTarget.dataset.dropFolder;
+          if (folderId === "trash") {
+            foundFolderId = "trash";
+            foundFolderName = "Trash";
+            foundType = "table";
+            dragHoverId = "trash";
+            dragOverTreePath = null;
+            dragBreadcrumbId = null;
+          } else if (folderId) {
+            const isDraggingThis = items.some(
+              (it) => it.id === folderId || folderId.startsWith(it.id + "/")
+            );
+            if (!isDraggingThis) {
+              foundFolderId = folderId;
+              foundFolderName =
+                dropTarget.dataset.dropName ||
+                (folderId === "docs"
+                  ? "Documents"
+                  : folderId.split("/").pop() || folderId);
+              foundType = dropTarget.closest("[data-tree-sidebar]")
+                ? "tree"
+                : dropTarget.closest("[data-breadcrumbs]")
+                  ? "breadcrumb"
+                  : "table";
+
+              if (foundType === "tree") {
+                dragOverTreePath =
+                  folderId === "docs"
+                    ? "root"
+                    : folderId.replace(/^docs\//, "");
+                dragHoverId = null;
+                dragBreadcrumbId = null;
+              } else if (foundType === "breadcrumb") {
+                dragBreadcrumbId =
+                  folderId === "docs"
+                    ? "root"
+                    : folderId.replace(/^docs\//, "");
+                dragHoverId = null;
+                dragOverTreePath = null;
+              } else {
+                dragHoverId = folderId;
+                dragOverTreePath = null;
+                dragBreadcrumbId = null;
+              }
+            }
+          }
+        }
+
+        if (!foundFolderId) {
+          dragOverTreePath = null;
+          dragHoverId = null;
+          dragBreadcrumbId = null;
+        }
+
+        pointerDragState = {
+          isDragging: true,
+          items,
+          startX: 0,
+          startY: 0,
+          currentX: clientX,
+          currentY: clientY,
+          targetFolderId: foundFolderId,
+          targetFolderName: foundFolderName,
+          targetFolderType: foundType,
+        };
+      } catch {}
+    };
+
+    const handleWindowDragLeave = (e: DragEvent): void => {
+      try {
+        const isInternal =
+          isOutboundDragging ||
+          isDraggingInternalFile ||
+          isCurrentDragSessionInternal ||
+          outboundDragItems.length > 0;
+        if (!isInternal) return;
+
+        if (
+          e.clientX <= 1 ||
+          e.clientX >= window.innerWidth - 1 ||
+          e.clientY <= 1 ||
+          e.clientY >= window.innerHeight - 1 ||
+          !e.relatedTarget
+        ) {
+          pointerDragState = null;
+          dragOverTreePath = null;
+          dragHoverId = null;
+          dragBreadcrumbId = null;
+        }
+      } catch {}
+    };
+
+    const handleWindowDrop = async (e: DragEvent): Promise<void> => {
+      try {
+        const isInternal =
+          isOutboundDragging ||
+          isDraggingInternalFile ||
+          isCurrentDragSessionInternal ||
+          outboundDragItems.length > 0;
+        if (!isInternal) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const itemsToMove = outboundDragItems.length > 0 ? outboundDragItems : pendingDragItems;
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+        const elem = document.elementFromPoint(clientX, clientY);
+        const dropTarget = elem?.closest<HTMLElement>("[data-drop-folder]");
+
+        if (dropTarget && itemsToMove.length > 0) {
+          const targetFolderId = dropTarget.dataset.dropFolder;
+          if (targetFolderId === "trash") {
+            await moveToTrash([...itemsToMove]);
+          } else if (targetFolderId) {
+            const isDraggingThis = itemsToMove.some(
+              (it) => it.id === targetFolderId || targetFolderId.startsWith(it.id + "/")
+            );
+            if (!isDraggingThis) {
+              await safeInternalMove([...itemsToMove], targetFolderId);
+            }
+          }
+        }
+        resetAllDragStates();
+      } catch {}
+    };
+
+    const handleGlobalKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        resetAllDragStates();
+      } else if (e.key === "Alt" || e.altKey || (e.key === "Tab" && e.altKey)) {
+        if (activePointerId !== null && pendingDragItems.length > 0 && !isOutboundDragging) {
+          void startNativeFileDrag(pendingDragItems);
+        }
+      }
+    };
+    const handleDocumentMouseLeave = (e: MouseEvent): void => {
+      if (
+        activePointerId !== null &&
+        pendingDragItems.length > 0 &&
+        !isOutboundDragging &&
+        e.buttons !== 0
+      ) {
+        void startNativeFileDrag(pendingDragItems);
+      }
+    };
+
+    window.addEventListener("dragenter", handleWindowDragOver, true);
+    window.addEventListener("dragover", handleWindowDragOver, true);
+    window.addEventListener("dragleave", handleWindowDragLeave, true);
+    window.addEventListener("drop", handleWindowDrop, true);
     window.addEventListener("dragend", handleGlobalDragEnd);
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    document.documentElement.addEventListener("mouseleave", handleDocumentMouseLeave);
 
     return () => {
       isMounted = false;
-      window.removeEventListener("pointermove", onGlobalPointerMove);
-      window.removeEventListener("pointerup", onGlobalPointerUp);
-      window.removeEventListener("pointercancel", onGlobalPointerUp);
-      document.body.style.userSelect = "";
+      resetAllDragStates();
+      window.removeEventListener("dragenter", handleWindowDragOver, true);
+      window.removeEventListener("dragover", handleWindowDragOver, true);
+      window.removeEventListener("dragleave", handleWindowDragLeave, true);
+      window.removeEventListener("drop", handleWindowDrop, true);
       window.removeEventListener("dragend", handleGlobalDragEnd);
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+      document.documentElement.removeEventListener("mouseleave", handleDocumentMouseLeave);
       window.removeEventListener("documents-path-changed", handlePathChanged);
       window.removeEventListener("shortcut-new-note", handleShortcutNewNote);
       window.removeEventListener("focus", handleWindowFocus);
@@ -1087,6 +1480,8 @@
     folderToRename = {
       id: `docs/${node.path}`,
       name: node.name,
+      isFolder: true,
+      extension: "",
     };
     renameFolderName = node.name;
     renameFolderOpen = true;
@@ -1098,7 +1493,7 @@
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = "move";
+        e.dataTransfer.dropEffect = "copy";
       }
       dragOverTreePath = targetPath;
     } catch {}
@@ -1133,6 +1528,17 @@
 
       const targetFolderId =
         targetRelPath === "root" ? "docs" : `docs/${targetRelPath}`;
+
+      if (isOutboundDragging || isDraggingInternalFile || outboundDragItems.length > 0 || pendingDragItems.length > 0) {
+        const itemsToMove = outboundDragItems.length > 0
+          ? [...outboundDragItems]
+          : (pointerDragState?.items?.length ? [...pointerDragState.items] : [...pendingDragItems]);
+        if (itemsToMove.length > 0) {
+          await safeInternalMove(itemsToMove, targetFolderId);
+        }
+        resetAllDragStates();
+        return;
+      }
 
       const files = e.dataTransfer?.files;
       if (files && files.length > 0) {
@@ -1209,13 +1615,19 @@
         return;
       }
 
-      const trimmedName = renameFolderName.trim();
-      if (!isValidFolderName(trimmedName)) {
+      const isFolder = folderToRename.isFolder !== false;
+      const ext = isFolder ? "" : (folderToRename.extension ?? "");
+      const stem = isFolder
+        ? renameFolderName.trim()
+        : normalizeRenamedStem(renameFolderName, ext);
+      const finalName = isFolder ? stem : `${stem}${ext}`;
+
+      if (!isValidFolderName(stem) || !isValidFolderName(finalName)) {
         renameFolderOpen = false;
         return;
       }
 
-      if (trimmedName === folderToRename.name) {
+      if (finalName === folderToRename.name) {
         renameFolderOpen = false;
         return;
       }
@@ -1225,7 +1637,7 @@
         lastSlashIndex !== -1
           ? folderToRename.id.substring(0, lastSlashIndex)
           : "docs";
-      const newPath = `${parentDir}/${trimmedName}`;
+      const newPath = `${parentDir}/${finalName}`;
 
       const oldDocPath = folderToRename.id;
       await moveFile(
@@ -1414,15 +1826,20 @@
       if (activeTab !== "active") return;
       e.preventDefault();
       if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = "move";
+        e.dataTransfer.dropEffect = "copy";
       }
-      isDragging = true;
+      if (
+        !isOutboundDragging &&
+        !isDraggingInternalFile &&
+        outboundDragItems.length === 0
+      ) {
+        isDragging = true;
+      }
     } catch {}
   }
 
   function handleDragLeave(e: DragEvent): void {
     try {
-      if (!isDragging) return;
       e.preventDefault();
       const currentTarget = e.currentTarget as HTMLElement | null;
       if (currentTarget) {
@@ -1442,6 +1859,10 @@
       if (activeTab !== "active") return;
       e.preventDefault();
       isDragging = false;
+
+      if (isOutboundDragging || isDraggingInternalFile || outboundDragItems.length > 0) {
+        return;
+      }
 
       const targetFolderId =
         currentPath === "root" ? "docs" : `docs/${currentPath}`;
@@ -1694,9 +2115,34 @@
       if (isMounted) {
         selectedIds = new Set();
         selectedTreeFilePath = null;
+        const relTarget = targetFolderId.replace(/^docs\/?/, "");
+        if (relTarget && relTarget !== "root") {
+          autoExpandAncestors(relTarget);
+        }
         await Promise.all([fetchData(), fetchFolderTree()]);
       }
     } catch {}
+  }
+
+  let isMovingBatch = false;
+  async function safeInternalMove(
+    items: Array<{ id: string; name: string }>,
+    targetFolderId: string
+  ): Promise<void> {
+    if (isMovingBatch || !items || items.length === 0 || !targetFolderId) return;
+    const isDraggingTarget = items.some(
+      (it) => it.id === targetFolderId || targetFolderId.startsWith(it.id + "/")
+    );
+    if (isDraggingTarget) return;
+
+    isMovingBatch = true;
+    try {
+      await handleBatchInternalMove([...items], targetFolderId);
+    } finally {
+      setTimeout(() => {
+        isMovingBatch = false;
+      }, 400);
+    }
   }
 
   function buildDragStartPayload(
@@ -1736,9 +2182,20 @@
     targetFolderType: "tree" | "table" | "breadcrumb" | null;
   } | null>(null);
 
+  let isDraggingInternalFile = $state(false);
+  let isOutboundDragging = $state(false);
+  let isCurrentDragSessionInternal = $state(false);
+  let outboundDragItems = $state<DragItemPayload[]>([]);
+  let cachedDragAbsPaths: string[] = [];
+
   let draggedItemIdSet = $derived.by(() => {
-    if (!pointerDragState?.isDragging || !pointerDragState.items) return new Set<string>();
-    return new Set(pointerDragState.items.map((it) => it.id));
+    if (pointerDragState?.isDragging && pointerDragState.items) {
+      return new Set(pointerDragState.items.map((it) => it.id));
+    }
+    if (isOutboundDragging && outboundDragItems.length > 0) {
+      return new Set(outboundDragItems.map((it) => it.id));
+    }
+    return new Set<string>();
   });
 
   let activePointerId: number | null = null;
@@ -1746,12 +2203,125 @@
   let pendingDragItems: DragItemPayload[] = [];
   let dragStartCoords = { x: 0, y: 0 };
 
+  const DRAG_BASE64_ICON =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+  async function moveToTrash(items: DragItemPayload[]): Promise<void> {
+    if (!items || items.length === 0 || activeTab !== "active") return;
+    const targetIdsList = items.map((it) => it.id);
+    const targetIdsSet = new Set(targetIdsList);
+    const prev = fsItems;
+    fsItems = fsItems.filter((item) => !targetIdsSet.has(item.id));
+    selectedIds = new Set();
+    try {
+      await bulkSoftDeleteFilesApi(targetIdsList, customBasePath);
+    } catch {
+      if (isMounted) fsItems = prev;
+    }
+    if (isMounted) {
+      await Promise.all([fetchData(), fetchFolderTree()]);
+    }
+  }
+
+  function resetAllDragStates(): void {
+    window.removeEventListener("pointermove", onGlobalPointerMove);
+    window.removeEventListener("pointerup", onGlobalPointerUp);
+    window.removeEventListener("pointercancel", onGlobalPointerCancel);
+    window.removeEventListener("dragstart", blockNativeDrag, true);
+    window.removeEventListener("selectstart", blockNativeDrag, true);
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+
+    activePointerId = null;
+    pointerThresholdPassed = false;
+    pendingDragItems = [];
+    pointerDragState = null;
+    dragOverTreePath = null;
+    dragHoverId = null;
+    dragBreadcrumbId = null;
+    isDragging = false;
+    isOutboundDragging = false;
+    isDraggingInternalFile = false;
+    isCurrentDragSessionInternal = false;
+    outboundDragItems = [];
+    cachedDragAbsPaths = [];
+  }
+
+  function onGlobalPointerCancel(e?: PointerEvent): void {
+    if (e && e.buttons !== 0) {
+      // Mouse button is still pressed; do NOT cancel the drag!
+      return;
+    }
+    resetAllDragStates();
+  }
+
+  async function startNativeFileDrag(items: DragItemPayload[]): Promise<void> {
+    if (isOutboundDragging || !items || items.length === 0) return;
+    isOutboundDragging = true;
+    isDraggingInternalFile = true;
+    isCurrentDragSessionInternal = true;
+    outboundDragItems = [...items];
+
+    // Dismiss the HTML floating badge immediately
+    pointerDragState = null;
+    dragHoverId = null;
+    dragOverTreePath = null;
+    dragBreadcrumbId = null;
+    activePointerId = null;
+    pointerThresholdPassed = false;
+    pendingDragItems = [];
+    isDragging = false;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+
+    window.removeEventListener("pointermove", onGlobalPointerMove);
+    window.removeEventListener("pointerup", onGlobalPointerUp);
+    window.removeEventListener("pointercancel", onGlobalPointerCancel);
+
+    const suppressClick = (clickEv: MouseEvent) => {
+      clickEv.stopPropagation();
+      clickEv.preventDefault();
+      window.removeEventListener("click", suppressClick, true);
+    };
+    window.addEventListener("click", suppressClick, true);
+    setTimeout(() => {
+      window.removeEventListener("click", suppressClick, true);
+    }, 300);
+
+    try {
+      let paths = cachedDragAbsPaths;
+      if (!paths || paths.length === 0) {
+        const targetIds = items.map((it) => it.id);
+        paths = await getAbsolutePaths(targetIds, customBasePath);
+      }
+      if (!paths || paths.length === 0) {
+        resetAllDragStates();
+        return;
+      }
+
+      await startDrag(
+        {
+          item: paths,
+          icon: DRAG_BASE64_ICON,
+          mode: "copy",
+        },
+        () => {
+          resetAllDragStates();
+        }
+      );
+    } catch (err) {
+      console.error("Failed to start drag:", err);
+    } finally {
+      resetAllDragStates();
+    }
+  }
+
   const blockNativeDrag = (ev: Event): void => {
     ev.preventDefault();
   };
 
   function onGlobalPointerMove(e: PointerEvent): void {
-    if (activePointerId === null || pendingDragItems.length === 0) return;
+    if (activePointerId === null || pendingDragItems.length === 0 || isOutboundDragging) return;
 
     const dx = e.clientX - dragStartCoords.x;
     const dy = e.clientY - dragStartCoords.y;
@@ -1766,14 +2336,18 @@
 
     let foundFolderId: string | null = null;
     let foundFolderName: string | null = null;
-    let foundType: "tree" | "table" | "breadcrumb" | null = null;
+    let foundType: "tree" | "table" | "breadcrumb" | "trash" | null = null;
 
     const elem = document.elementFromPoint(e.clientX, e.clientY);
     if (elem) {
       const dropTarget = elem.closest<HTMLElement>("[data-drop-folder]");
       if (dropTarget) {
         const folderId = dropTarget.dataset.dropFolder;
-        if (folderId) {
+        if (folderId === "trash") {
+          foundFolderId = "trash";
+          foundFolderName = "Trash";
+          foundType = "trash";
+        } else if (folderId) {
           const isDraggingThisFolder = pendingDragItems.some(
             (it) => it.id === folderId || folderId.startsWith(it.id + "/")
           );
@@ -1796,6 +2370,23 @@
       }
     }
 
+    // Switch to native drag if dragging at the absolute extreme boundary of the window AND not hovering a drop target:
+    const isAtWindowEdge =
+      !foundFolderId &&
+      (e.clientX <= 4 ||
+        e.clientX >= window.innerWidth - 4 ||
+        e.clientY <= 4 ||
+        e.clientY >= window.innerHeight - 4 ||
+        e.clientX < 0 ||
+        e.clientX > window.innerWidth ||
+        e.clientY < 0 ||
+        e.clientY > window.innerHeight);
+
+    if (isAtWindowEdge && !isOutboundDragging) {
+      void startNativeFileDrag(pendingDragItems);
+      return;
+    }
+
     pointerDragState = {
       isDragging: true,
       items: pendingDragItems,
@@ -1805,7 +2396,7 @@
       currentY: e.clientY,
       targetFolderId: foundFolderId,
       targetFolderName: foundFolderName,
-      targetFolderType: foundType,
+      targetFolderType: foundType === "trash" ? "table" : foundType,
     };
 
     dragOverTreePath =
@@ -1814,7 +2405,7 @@
           ? "root"
           : foundFolderId.replace(/^docs\//, "")
         : null;
-    dragHoverId = foundType === "table" ? foundFolderId : null;
+    dragHoverId = (foundType === "table" || foundType === "trash") ? foundFolderId : null;
     dragBreadcrumbId =
       foundType === "breadcrumb" && foundFolderId
         ? foundFolderId === "docs"
@@ -1826,7 +2417,7 @@
   async function onGlobalPointerUp(_e?: PointerEvent): Promise<void> {
     window.removeEventListener("pointermove", onGlobalPointerMove);
     window.removeEventListener("pointerup", onGlobalPointerUp);
-    window.removeEventListener("pointercancel", onGlobalPointerUp);
+    window.removeEventListener("pointercancel", onGlobalPointerCancel);
     window.removeEventListener("dragstart", blockNativeDrag, true);
     window.removeEventListener("selectstart", blockNativeDrag, true);
     document.body.style.userSelect = "";
@@ -1856,8 +2447,16 @@
       }, 100);
     }
 
+    if (!isOutboundDragging) {
+      isDraggingInternalFile = false;
+    }
+
     if (wasDragging && targetFolderId && itemsToMove.length > 0) {
-      await handleBatchInternalMove(itemsToMove, targetFolderId);
+      if (targetFolderId === "trash") {
+        await moveToTrash(itemsToMove);
+      } else {
+        await safeInternalMove(itemsToMove, targetFolderId);
+      }
     }
   }
 
@@ -1879,11 +2478,35 @@
       type: itemByIdMap.get(p.id)?.type || item.type,
     }));
 
+    cachedDragAbsPaths = [];
+    const targetPaths = pendingDragItems.map((it) => it.id);
+    void getAbsolutePaths(targetPaths, customBasePath).then((paths) => {
+      cachedDragAbsPaths = paths;
+    });
+
     window.addEventListener("dragstart", blockNativeDrag, true);
     window.addEventListener("selectstart", blockNativeDrag, true);
     window.addEventListener("pointermove", onGlobalPointerMove, { passive: false });
     window.addEventListener("pointerup", onGlobalPointerUp);
-    window.addEventListener("pointercancel", onGlobalPointerUp);
+    window.addEventListener("pointercancel", onGlobalPointerCancel);
+  }
+
+  function handleExternalIconPointerDown(e: PointerEvent, item: MixedItem): void {
+    if (e.button !== 0 || activeTab !== "active") return;
+    e.stopPropagation();
+
+    const payload = buildDragStartPayload(item);
+    const itemsToMove: DragItemPayload[] = payload.map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: itemByIdMap.get(p.id)?.type || item.type,
+    }));
+
+    const targetPaths = itemsToMove.map((it) => it.id);
+    void getAbsolutePaths(targetPaths, customBasePath).then((paths) => {
+      cachedDragAbsPaths = paths;
+      void startNativeFileDrag(itemsToMove);
+    });
   }
 
   function handleTreeFilePointerDown(e: PointerEvent, file: DocumentTreeEntry): void {
@@ -1909,11 +2532,17 @@
     }
     pendingDragItems = itemsToMove;
 
+    cachedDragAbsPaths = [];
+    const targetPaths = pendingDragItems.map((it) => it.id);
+    void getAbsolutePaths(targetPaths, customBasePath).then((paths) => {
+      cachedDragAbsPaths = paths;
+    });
+
     window.addEventListener("dragstart", blockNativeDrag, true);
     window.addEventListener("selectstart", blockNativeDrag, true);
     window.addEventListener("pointermove", onGlobalPointerMove, { passive: false });
     window.addEventListener("pointerup", onGlobalPointerUp);
-    window.addEventListener("pointercancel", onGlobalPointerUp);
+    window.addEventListener("pointercancel", onGlobalPointerCancel);
   }
 
   function handleTreeFolderPointerDown(e: PointerEvent, node: FolderTreeNode): void {
@@ -1944,11 +2573,17 @@
     }
     pendingDragItems = itemsToMove;
 
+    cachedDragAbsPaths = [];
+    const targetPaths = pendingDragItems.map((it) => it.id);
+    void getAbsolutePaths(targetPaths, customBasePath).then((paths) => {
+      cachedDragAbsPaths = paths;
+    });
+
     window.addEventListener("dragstart", blockNativeDrag, true);
     window.addEventListener("selectstart", blockNativeDrag, true);
     window.addEventListener("pointermove", onGlobalPointerMove, { passive: false });
     window.addEventListener("pointerup", onGlobalPointerUp);
-    window.addEventListener("pointercancel", onGlobalPointerUp);
+    window.addEventListener("pointercancel", onGlobalPointerCancel);
   }
 </script>
 
@@ -1966,7 +2601,7 @@
     ondragleave={handleDragLeave}
     ondrop={handleDrop}
   >
-    {#if isDragging}
+    {#if isDragging && !isOutboundDragging && !isDraggingInternalFile && outboundDragItems.length === 0}
       <div
         class="absolute inset-0 z-command bg-primary/10 border-2 border-dashed border-primary rounded-xl flex items-center justify-center backdrop-blur-sm pointer-events-none transition-all duration-200"
       >
@@ -1987,9 +2622,10 @@
             <TabSwitcher
               tabs={[
                 { value: "active", label: "Active", icon: FolderIcon },
-                { value: "trash", label: "Trash", icon: Trash2 },
+                { value: "trash", label: "Trash", icon: Trash2, dropFolder: "trash", dropName: "Trash" },
               ]}
               value={activeTab}
+              dragHoverId={dragHoverId}
               onValueChange={(val) => {
                 activeTab = val as "active" | "trash";
                 selectedIds = new Set();
@@ -2006,19 +2642,55 @@
 
         {#snippet actions()}
           {#if activeTab === "active"}
-            <Button
-              variant="destructive-outline"
-              size="sm"
-              onclick={() => bulkAction("softDelete")}
-              disabled={itemsToShow.length === 0}
+            <div
+              role="region"
+              aria-label="Trash drop target"
+              data-drop-folder="trash"
+              data-drop-name="Trash"
+              class="inline-flex"
+              ondragover={(e) => {
+                try {
+                  if (activeTab !== "active") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+                  dragHoverId = "trash";
+                } catch {}
+              }}
+              ondragleave={() => {
+                if (dragHoverId === "trash") dragHoverId = null;
+              }}
+              ondrop={async (e) => {
+                try {
+                  if (activeTab !== "active") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  dragHoverId = null;
+                  const itemsToMove = outboundDragItems.length > 0
+                    ? [...outboundDragItems]
+                    : (pointerDragState?.items?.length ? [...pointerDragState.items] : [...pendingDragItems]);
+                  if (itemsToMove.length > 0) {
+                    await moveToTrash(itemsToMove);
+                  }
+                  resetAllDragStates();
+                } catch {}
+              }}
             >
-              <Trash2 class="w-4 h-4" />
-              <span class="hidden sm:inline">
-                {selectedIds.size > 0
-                  ? `Delete (${selectedIds.size})`
-                  : "Delete All"}
-              </span>
-            </Button>
+              <Button
+                variant="destructive-outline"
+                size="sm"
+                onclick={() => bulkAction("softDelete")}
+                disabled={itemsToShow.length === 0}
+                class={dragHoverId === "trash" ? "ring-2 ring-destructive bg-destructive/20 scale-105 transition-all" : ""}
+              >
+                <Trash2 class="w-4 h-4" />
+                <span class="hidden sm:inline">
+                  {selectedIds.size > 0
+                    ? `Delete (${selectedIds.size})`
+                    : "Delete All"}
+                </span>
+              </Button>
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -2199,7 +2871,7 @@
                       e.preventDefault();
                       e.stopPropagation();
                       if (e.dataTransfer) {
-                        e.dataTransfer.dropEffect = "move";
+                        e.dataTransfer.dropEffect = "copy";
                       }
                       dragHoverId = item.id;
                     } catch {}
@@ -2222,10 +2894,21 @@
                   }}
                   ondrop={async (e: DragEvent) => {
                     try {
-                      if (item.type !== "folder") return;
+                      if (item.type !== "folder" || activeTab !== "active") return;
                       e.preventDefault();
                       e.stopPropagation();
                       dragHoverId = null;
+
+                      if (isOutboundDragging || isDraggingInternalFile || outboundDragItems.length > 0 || pendingDragItems.length > 0) {
+                        const itemsToMove = outboundDragItems.length > 0
+                          ? [...outboundDragItems]
+                          : (pointerDragState?.items?.length ? [...pointerDragState.items] : [...pendingDragItems]);
+                        if (itemsToMove.length > 0) {
+                          await safeInternalMove(itemsToMove, item.id);
+                        }
+                        resetAllDragStates();
+                        return;
+                      }
 
                       const files = e.dataTransfer?.files;
                       if (files && files.length > 0) {
@@ -2265,7 +2948,15 @@
                     {@const visual = getFileVisual(item.name, item.type === "folder")}
                     {@const VisualIcon = visual.icon}
                     <div class="flex items-center gap-3 min-w-0">
-                      <VisualIcon class="w-5 h-5 shrink-0 {visual.colorClass} {visual.fillClass}" />
+                      <div
+                        class="cursor-grab active:cursor-grabbing hover:scale-110 active:scale-95 transition-transform shrink-0"
+                        title="Kéo icon này để thả ra ngoài app (Gemini, File Explorer, Desktop...)"
+                        role="button"
+                        tabindex="-1"
+                        onpointerdown={(e) => handleExternalIconPointerDown(e, item)}
+                      >
+                        <VisualIcon class="w-5 h-5 shrink-0 {visual.colorClass} {visual.fillClass}" />
+                      </div>
                       <span class="truncate">{item.name}</span>
                     </div>
                   </TableCell>
@@ -2295,8 +2986,24 @@
                           icon={Pencil}
                           onClick={(e: MouseEvent) => {
                             e.stopPropagation();
-                            folderToRename = item;
-                            renameFolderName = item.name;
+                            if (item.type === "folder") {
+                              folderToRename = {
+                                id: item.id,
+                                name: item.name,
+                                isFolder: true,
+                                extension: "",
+                              };
+                              renameFolderName = item.name;
+                            } else {
+                              const { stem, ext } = splitFileStemAndExt(item.name);
+                              folderToRename = {
+                                id: item.id,
+                                name: item.name,
+                                isFolder: false,
+                                extension: ext,
+                              };
+                              renameFolderName = stem;
+                            }
                             renameFolderOpen = true;
                           }}
                           title="Rename"
@@ -2381,7 +3088,7 @@
                         e.preventDefault();
                         e.stopPropagation();
                         if (e.dataTransfer) {
-                          e.dataTransfer.dropEffect = "move";
+                          e.dataTransfer.dropEffect = "copy";
                         }
                         dragBreadcrumbId = crumb.id;
                       } catch {}
@@ -2413,6 +3120,17 @@
                           crumb.id === "root"
                             ? "docs"
                             : `docs/${crumb.id}`;
+
+                        if (isOutboundDragging || isDraggingInternalFile || outboundDragItems.length > 0 || pendingDragItems.length > 0) {
+                          const itemsToMove = outboundDragItems.length > 0
+                            ? [...outboundDragItems]
+                            : (pointerDragState?.items?.length ? [...pointerDragState.items] : [...pendingDragItems]);
+                          if (itemsToMove.length > 0) {
+                            await safeInternalMove(itemsToMove, targetFolderId);
+                          }
+                          resetAllDragStates();
+                          return;
+                        }
 
                         const files = e.dataTransfer?.files;
                         if (files && files.length > 0) {
@@ -2807,18 +3525,34 @@
 
 <FormModal
   bind:isOpen={renameFolderOpen}
-  title="Rename Folder"
-  submitText="Rename Folder"
-  submitDisabled={!isValidFolderName(renameFolderName)}
+  title={folderToRename?.isFolder === false ? "Rename File" : "Rename Folder"}
+  submitText={folderToRename?.isFolder === false ? "Rename File" : "Rename Folder"}
+  submitDisabled={!isValidFolderName(
+    folderToRename?.isFolder === false
+      ? normalizeRenamedStem(renameFolderName, folderToRename?.extension ?? "")
+      : renameFolderName
+  )}
   onSubmit={handleRenameFolder}
 >
   <FormField>
-    <Input
-      bind:value={renameFolderName}
-      placeholder="e.g. Invoices"
-      maxlength={MAX_FOLDER_NAME_LENGTH}
-      required
-    />
+    <div class="flex items-center gap-2">
+      <div class="flex-1 min-w-0">
+        <Input
+          bind:value={renameFolderName}
+          placeholder={folderToRename?.isFolder === false ? "File name" : "e.g. Invoices"}
+          maxlength={MAX_FOLDER_NAME_LENGTH}
+          required
+        />
+      </div>
+      {#if folderToRename?.isFolder === false && folderToRename.extension}
+        <div
+          class="flex items-center gap-1.5 bg-primary/10 text-primary border border-primary/20 text-xs font-semibold px-2.5 py-2 rounded-lg font-mono tracking-wide shrink-0 select-none"
+          title="File format ({folderToRename.extension})"
+        >
+          {folderToRename.extension}
+        </div>
+      {/if}
+    </div>
   </FormField>
 </FormModal>
 
@@ -2892,7 +3626,9 @@
   filePath={editorFilePath}
   fileName={editorFileName}
   basePath={customBasePath}
-  onSaved={async () => {
+  onSaved={async (newPath, newName) => {
+    editorFilePath = newPath;
+    editorFileName = newName;
     if (isMounted) {
       await Promise.all([fetchData(), fetchFolderTree()]);
     }
@@ -2902,23 +3638,33 @@
 {#if pointerDragState?.isDragging}
   {@const count = pointerDragState.items.length}
   {@const firstItem = pointerDragState.items[0]}
+  {@const isTargetTrash = pointerDragState.targetFolderId === "trash"}
+  {@const isNearRight = typeof window !== "undefined" && pointerDragState.currentX > window.innerWidth - 360}
+  {@const isNearBottom = typeof window !== "undefined" && pointerDragState.currentY > window.innerHeight - 70}
   <div
-    class="fixed left-0 top-0 z-[99999] pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-card/95 backdrop-blur-md border border-primary/50 shadow-2xl text-xs font-medium text-foreground will-change-transform"
-    style="transform: translate3d({pointerDragState.currentX + 14}px, {pointerDragState.currentY + 14}px, 0);"
+    class="fixed left-0 top-0 z-[99999] pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-card/95 backdrop-blur-md border shadow-2xl text-xs font-medium text-foreground will-change-transform max-w-[calc(100vw-32px)] {isTargetTrash ? 'border-destructive/60 bg-destructive/15 text-destructive' : 'border-primary/50'}"
+    style="transform: translate3d({isNearRight ? pointerDragState.currentX - 14 : pointerDragState.currentX + 14}px, {isNearBottom ? pointerDragState.currentY - 14 : pointerDragState.currentY + 14}px, 0) translate({isNearRight ? '-100%' : '0%'}, {isNearBottom ? '-100%' : '0%'});"
   >
     <span
-      class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-primary text-primary-foreground text-xs font-bold leading-none shrink-0"
+      class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full text-xs font-bold leading-none shrink-0 {isTargetTrash ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground'}"
     >
       {count}
     </span>
-    <span class="truncate max-w-48 text-xs font-medium text-foreground">
+    <span class="truncate max-w-64 text-xs font-medium text-foreground">
       {count > 1 ? `${count} items selected` : (firstItem?.name || "item")}
     </span>
     {#if pointerDragState.targetFolderId && pointerDragState.targetFolderName}
-      <span class="text-primary font-semibold text-xs truncate max-w-36 shrink-0 flex items-center gap-1">
-        <span>&rarr;</span>
-        <span>{pointerDragState.targetFolderName}</span>
-      </span>
+      {#if isTargetTrash}
+        <span class="text-destructive font-semibold text-xs shrink-0 flex items-center gap-1">
+          <Trash2 class="w-3.5 h-3.5" />
+          <span>Move to Trash</span>
+        </span>
+      {:else}
+        <span class="text-primary font-semibold text-xs shrink-0 flex items-center gap-1">
+          <span>&rarr;</span>
+          <span>{pointerDragState.targetFolderName}</span>
+        </span>
+      {/if}
     {/if}
   </div>
 {/if}

@@ -26,6 +26,7 @@
     "core:window:allow-request-user-attention",
     "core:window:allow-set-focus",
     "dialog:default",
-    "dialog:allow-confirm"
+    "dialog:allow-confirm",
+    "drag:default"
   ]
 }

@@ -5,18 +5,22 @@
     value: string;
     label: string;
     icon?: ComponentType;
+    dropFolder?: string;
+    dropName?: string;
   };
 
   let {
     tabs,
     value = $bindable(),
     onValueChange,
-    class: className = ''
+    class: className = '',
+    dragHoverId = null
   }: {
     tabs: TabItem[];
     value: string;
     onValueChange?: (val: string) => void;
     class?: string;
+    dragHoverId?: string | null;
   } = $props();
 
   function handleClick(val: string) {
@@ -32,13 +36,22 @@
 >
   {#each tabs as tab (tab.value)}
     {@const isActive = value === tab.value}
+    {@const isDropHovered = !!(tab.dropFolder && dragHoverId === tab.dropFolder)}
     {@const Icon = tab.icon}
     <button
       type="button"
+      data-drop-folder={tab.dropFolder}
+      data-drop-name={tab.dropName}
       onclick={() => handleClick(tab.value)}
       title={tab.label}
       aria-label={tab.label}
-      class="shrink-0 whitespace-nowrap flex items-center justify-center gap-1.5 rounded-full px-3.5 sm:px-4 py-1.5 text-sm font-medium transition-colors outline-none cursor-pointer {isActive ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400' : 'text-muted-foreground hover:bg-black/10 dark:hover:bg-white/10 hover:text-foreground'}"
+      class="shrink-0 whitespace-nowrap flex items-center justify-center gap-1.5 rounded-full px-3.5 sm:px-4 py-1.5 text-sm font-medium transition-all outline-none cursor-pointer {
+        isDropHovered
+          ? 'bg-destructive/25 text-destructive ring-2 ring-destructive scale-105 shadow-md'
+          : isActive
+            ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400'
+            : 'text-muted-foreground hover:bg-black/10 dark:hover:bg-white/10 hover:text-foreground'
+      }"
     >
       {#if Icon}
         <Icon class="w-4 h-4 shrink-0" />
