@@ -485,10 +485,7 @@ export async function executeRestoreWithResolutions(
     if (Array.isArray(manifest.uiPreferences)) {
       for (const pref of manifest.uiPreferences) {
         if (pref && typeof pref.key === "string" && typeof pref.value === "string") {
-          if (
-            (pref.key === "documents_path" || pref.key === "backup_path") &&
-            !isPlatformPathValid(pref.value)
-          ) {
+          if (pref.key === "documents_path" && !isPlatformPathValid(pref.value)) {
             continue;
           }
           const valToSave = pref.key === "synced_ical_urls" ? "[]" : pref.value;
@@ -502,7 +499,7 @@ export async function executeRestoreWithResolutions(
       for (const [k, v] of Object.entries(manifest.settings)) {
         if (v != null) {
           const valStr = String(v);
-          if (k !== "documents_path" && k !== "backup_path" && k !== "synced_ical_urls") {
+          if (k !== "documents_path" && k !== "synced_ical_urls") {
             safeSetStorageItem(k, valStr);
           }
         }

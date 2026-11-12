@@ -32,7 +32,6 @@ const BACKUP_SETTINGS_KEYS: readonly string[] = [
   "auto_cleanup_config",
   "shortcut_config",
   "documents_path",
-  "backup_path",
   "google_ical_urls",
   "google_ical_url",
   "synced_ical_urls",
@@ -434,21 +433,18 @@ export async function exportBackupData(customDestZipPath?: string, password?: st
 
     let destZipPath = customDestZipPath;
     if (!destZipPath) {
-      let targetPath = safeGetStorageItem("backup_path");
-      if (!targetPath || !isPlatformPathValid(targetPath)) {
-        targetPath = safeGetStorageItem("documents_path");
+      let docsPath = safeGetStorageItem("documents_path");
+      if (!docsPath || !isPlatformPathValid(docsPath)) {
+        docsPath = await getDefaultDocumentDir();
       }
-      if (!targetPath || !isPlatformPathValid(targetPath)) {
-        targetPath = await getDefaultDocumentDir();
-      }
-      if (!targetPath) {
+      if (!docsPath) {
         throw new Error("Could not determine backup destination path");
       }
 
       const ext = isEncrypted ? "posbackup" : "zip";
       const fileName = `personal_os_full_backup_${new Date().toISOString().split("T")[0]}.${ext}`;
-      const cleanPath = targetPath.replace(TRAILING_SLASHES_REGEX, "");
-      destZipPath = `${cleanPath}/${fileName}`;
+      const cleanDocsPath = docsPath.replace(TRAILING_SLASHES_REGEX, "");
+      destZipPath = `${cleanDocsPath}/${fileName}`;
     }
 
     await invoke("create_backup_zip", {
@@ -511,48 +507,6 @@ export async function getDefaultDocumentDir(): Promise<string> {
     return typeof dir === "string" ? dir : "";
   } catch {
     return "";
-  }
-}
-
-export async function getDefaultBackupDir(): Promise<string> {
-  try {
-    const docDir = await getDefaultDocumentDir();
-    if (!docDir) return "";
-    const separator = docDir.includes("\\") ? "\\" : "/";
-    return `${docDir.replace(/[/\\]+$/, "")}${separator}backups`;
-  } catch {
-    return "";
-  }
-}
-
-export async function pickBackupFolderApi(currentPath: string): Promise<string | null> {
-  try {
-    const selected = await invoke<string | null>("pick_folder", {
-      defaultPath: currentPath && isPlatformPathValid(currentPath) ? currentPath : null,
-    });
-    if (selected && isPlatformPathValid(selected)) {
-      safeSetStorageItem("backup_path", selected);
-      toastState.add("success", "Backup storage path saved successfully");
-      return selected;
-    }
-    return null;
-  } catch (error) {
-    toastState.add("error", "Failed to select folder");
-    throw error;
-  }
-}
-
-export async function resetBackupFolderApi(): Promise<string> {
-  try {
-    const defaultDir = await getDefaultBackupDir();
-    if (defaultDir) {
-      safeSetStorageItem("backup_path", defaultDir);
-    }
-    toastState.add("success", "Backup storage path reset to default");
-    return defaultDir;
-  } catch (error) {
-    toastState.add("error", "Failed to reset Backup storage path");
-    throw error;
   }
 }
 
