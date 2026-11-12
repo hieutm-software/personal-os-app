@@ -86,23 +86,29 @@ export async function uploadFileFromPath(
 }
 
 export function extractErrorMessage(err: unknown): string {
+  let raw = "";
   if (!err) return "";
-  if (typeof err === "string") return err.trim();
-  if (err instanceof Error) return err.message.trim();
-  if (typeof err === "object") {
+  if (typeof err === "string") {
+    raw = err.trim();
+  } else if (err instanceof Error) {
+    raw = err.message.trim();
+  } else if (typeof err === "object") {
     const obj = err as Record<string, unknown>;
     if (typeof obj.message === "string" && obj.message.trim()) {
-      return obj.message.trim();
+      raw = obj.message.trim();
+    } else if (typeof obj.error === "string" && obj.error.trim()) {
+      raw = obj.error.trim();
+    } else {
+      try {
+        const json = JSON.stringify(err);
+        if (json && json !== "{}") raw = json;
+      } catch {}
     }
-    if (typeof obj.error === "string" && obj.error.trim()) {
-      return obj.error.trim();
-    }
-    try {
-      const json = JSON.stringify(err);
-      if (json && json !== "{}") return json;
-    } catch {}
   }
-  return String(err);
+  if (!raw) raw = String(err || "").trim();
+  return raw
+    .replace(/^Unknown error:\s*/i, "")
+    .replace(/^IO error:\s*/i, "");
 }
 
 export async function moveFile(

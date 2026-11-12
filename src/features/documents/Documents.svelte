@@ -163,6 +163,56 @@
   } | null>(null);
   let renameFolderName = $state("");
 
+  let renameTargetCandidateName = $derived.by((): string => {
+    if (!folderToRename) return "";
+    const isFolder = folderToRename.isFolder !== false;
+    const ext = isFolder ? "" : (folderToRename.extension ?? "");
+    const stem = isFolder
+      ? renameFolderName.trim()
+      : normalizeRenamedStem(renameFolderName, ext);
+    return isFolder ? stem : `${stem}${ext}`;
+  });
+
+  let isRenameTargetConflict = $derived.by((): boolean => {
+    if (!renameFolderOpen || !folderToRename) return false;
+    const targetName = renameTargetCandidateName;
+    if (!targetName || targetName.toLowerCase() === folderToRename.name.toLowerCase()) {
+      return false;
+    }
+
+    const normalizedOldId = folderToRename.id.replace(/\\/g, "/");
+    const oldRelPath = normalizedOldId.startsWith("docs/")
+      ? normalizedOldId.slice(5)
+      : normalizedOldId;
+    const lastSlash = oldRelPath.lastIndexOf("/");
+    const parentRel = lastSlash !== -1 ? oldRelPath.substring(0, lastSlash) : null;
+
+    const lowerTarget = targetName.toLowerCase();
+    for (let i = 0, len = rawTreeEntries.length; i < len; i++) {
+      const entry = rawTreeEntries[i];
+      const entryParent = entry.parent_path || null;
+      if (entryParent === parentRel && entry.name.toLowerCase() === lowerTarget) {
+        return true;
+      }
+    }
+
+    for (let i = 0, len = fsItems.length; i < len; i++) {
+      const item = fsItems[i];
+      if (item.name.toLowerCase() === lowerTarget && item.name.toLowerCase() !== folderToRename.name.toLowerCase()) {
+        const itemOldId = item.id.replace(/\\/g, "/");
+        const itemLastSlash = itemOldId.lastIndexOf("/");
+        const itemParent = itemLastSlash !== -1 ? itemOldId.substring(0, itemLastSlash) : "docs";
+        const folderLastSlash = normalizedOldId.lastIndexOf("/");
+        const folderParent = folderLastSlash !== -1 ? normalizedOldId.substring(0, folderLastSlash) : "docs";
+        if (itemParent === folderParent) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  });
+
   function splitFileStemAndExt(rawName: string): { stem: string; ext: string } {
     const trimmed = rawName.trim();
     const lastDot = trimmed.lastIndexOf(".");
@@ -1664,6 +1714,10 @@
 
       if (finalName === folderToRename.name) {
         renameFolderOpen = false;
+        return;
+      }
+
+      if (isRenameTargetConflict) {
         return;
       }
 
@@ -3624,11 +3678,12 @@
   bind:isOpen={renameFolderOpen}
   title={folderToRename?.isFolder === false ? "Rename File" : "Rename Folder"}
   submitText={folderToRename?.isFolder === false ? "Rename File" : "Rename Folder"}
-  submitDisabled={!isValidFolderName(
-    folderToRename?.isFolder === false
-      ? normalizeRenamedStem(renameFolderName, folderToRename?.extension ?? "")
-      : renameFolderName
-  )}
+  submitDisabled={isRenameTargetConflict ||
+    !isValidFolderName(
+      folderToRename?.isFolder === false
+        ? normalizeRenamedStem(renameFolderName, folderToRename?.extension ?? "")
+        : renameFolderName
+    )}
   onSubmit={handleRenameFolder}
 >
   <FormField>
@@ -3650,6 +3705,11 @@
         </div>
       {/if}
     </div>
+    {#if isRenameTargetConflict}
+      <p class="text-xs text-rose-500 mt-1.5 font-medium">
+        An item with this name already exists in this folder
+      </p>
+    {/if}
   </FormField>
 </FormModal>
 

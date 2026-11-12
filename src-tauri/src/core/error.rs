@@ -24,16 +24,16 @@ impl Serialize for AppError {
             message: Cow<'a, str>,
         }
 
-        let error_type = match self {
-            AppError::Io(_) => "Io",
-            AppError::Keyring(_) => "Keyring",
-            AppError::Database(_) => "Database",
-            AppError::Unknown(_) => "Unknown",
+        let (error_type, message) = match self {
+            AppError::Io(e) => ("Io", Cow::Owned(e.to_string())),
+            AppError::Keyring(s) => ("Keyring", Cow::Borrowed(s.as_str())),
+            AppError::Database(s) => ("Database", Cow::Borrowed(s.as_str())),
+            AppError::Unknown(s) => ("Unknown", Cow::Borrowed(s.as_str())),
         };
 
         let wrapper = ErrorWrapper {
             error_type,
-            message: Cow::Owned(self.to_string()),
+            message,
         };
         wrapper.serialize(serializer)
     }
