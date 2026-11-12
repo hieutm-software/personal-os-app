@@ -100,8 +100,31 @@ export async function moveFile(
       basePath: sanitizeOptionalBasePath(basePath),
     });
     if (!silent) toastState.add("success", "Moved successfully");
-  } catch (err) {
-    if (!silent) toastState.add("error", "Failed to move item");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err || "");
+    if (!silent) toastState.add("error", msg ? `Failed to move item: ${msg}` : "Failed to move item");
+    throw err;
+  }
+}
+
+export async function renameItemApi(
+  sourcePath: string,
+  targetPath: string,
+  basePath?: string | null,
+  isFolder: boolean = false
+): Promise<void> {
+  try {
+    const safeSourcePath = validateRelativeStoragePath(sourcePath);
+    const safeTargetPath = validateRelativeStoragePath(targetPath);
+    await invoke<void>("move_file", {
+      sourcePath: safeSourcePath,
+      targetPath: safeTargetPath,
+      basePath: sanitizeOptionalBasePath(basePath),
+    });
+    toastState.add("success", isFolder ? "Folder renamed successfully" : "File renamed successfully");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err || "");
+    toastState.add("error", msg ? `Failed to rename: ${msg}` : (isFolder ? "Failed to rename folder" : "Failed to rename file"));
     throw err;
   }
 }

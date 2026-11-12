@@ -673,11 +673,47 @@ pub async fn move_file(
     tokio::task::spawn_blocking(move || {
         let src = fs_service::get_local_path(&app, &source_path, base_path.as_deref())?;
         let dest = fs_service::get_local_path(&app, &target_path, base_path.as_deref())?;
+
+        if !src.exists() {
+            return Err(AppError::Unknown("Source item does not exist".to_string()));
+        }
+
+        let is_same_file = src == dest || (
+            cfg!(target_os = "windows")
+                && src.canonicalize().ok().is_some()
+                && src.canonicalize().ok() == dest.canonicalize().ok()
+        );
+
+        if is_same_file && src == dest {
+            return Ok(());
+        }
+
+        if dest.exists() && !is_same_file {
+            return Err(AppError::Unknown("An item with the same name already exists".to_string()));
+        }
+
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::rename(&src, &dest)?;
-        Ok(())
+
+        let mut last_err = None;
+        for _attempt in 0..5 {
+            match fs::rename(&src, &dest) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+
+        if src.is_file() {
+            fs::copy(&src, &dest)?;
+            let _ = fs::remove_file(&src);
+            return Ok(());
+        }
+
+        Err(AppError::from(last_err.unwrap()))
     })
     .await?
 }

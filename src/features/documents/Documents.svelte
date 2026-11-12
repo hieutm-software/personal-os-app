@@ -71,6 +71,7 @@
     moveFile,
     notifyUploadResult,
     openFolderInOs,
+    renameItemApi,
     restoreFile,
     scanDocumentTree,
     softDeleteFile,
@@ -1030,9 +1031,10 @@
     folderToRename = null;
   });
 
-  function estimateBreadcrumbWidth(crumb: BreadcrumbItem): number {
-    if (crumb.id === "root" || crumb.id === "ellipsis") return 40;
-    return Math.min(174, crumb.name.length * 8 + 24);
+  function estimateBreadcrumbWidth(crumb: BreadcrumbItem, isLast: boolean): number {
+    if (crumb.id === "root" || crumb.id === "ellipsis") return 36;
+    const maxW = isLast ? 480 : 340;
+    return Math.min(maxW, Math.ceil(crumb.name.length * 7.5 + 24));
   }
 
   let breadcrumbs = $derived.by((): BreadcrumbItem[] => {
@@ -1059,14 +1061,14 @@
         return crumbs;
       }
 
-      const maxAllowedWidth = breadcrumbContainerWidth - 50;
+      const maxAllowedWidth = breadcrumbContainerWidth - 24;
       const widths = new Array<number>(crumbCount);
       let totalWidth = 0;
 
       for (let i = 0; i < crumbCount; i++) {
-        const w = estimateBreadcrumbWidth(crumbs[i]);
+        const w = estimateBreadcrumbWidth(crumbs[i], i === crumbCount - 1);
         widths[i] = w;
-        totalWidth += w + (i > 0 ? 20 : 0);
+        totalWidth += w + (i > 0 ? 18 : 0);
       }
 
       if (totalWidth <= maxAllowedWidth) {
@@ -1074,12 +1076,12 @@
       }
 
       let removedCount = 0;
-      let currentTotal = totalWidth + 60;
+      let currentTotal = totalWidth + 36;
       const maxRemovable = crumbCount - 2;
 
       while (currentTotal > maxAllowedWidth && removedCount < maxRemovable) {
         const removeIdx = 1 + removedCount;
-        currentTotal -= widths[removeIdx] + 20;
+        currentTotal -= widths[removeIdx] + 18;
         removedCount++;
       }
 
@@ -1487,6 +1489,39 @@
     renameFolderOpen = true;
   }
 
+  function openRenameTreeFile(e: MouseEvent, file: DocumentTreeEntry): void {
+    e.stopPropagation();
+    const { stem, ext } = splitFileStemAndExt(file.name);
+    const { targetFileId } = getTreeFileTarget(file);
+    folderToRename = {
+      id: targetFileId,
+      name: file.name,
+      isFolder: false,
+      extension: ext,
+    };
+    renameFolderName = stem;
+    renameFolderOpen = true;
+  }
+
+  async function deleteTreeFile(e: MouseEvent, file: DocumentTreeEntry): Promise<void> {
+    e.stopPropagation();
+    try {
+      const { targetFileId } = getTreeFileTarget(file);
+      await softDeleteFile(targetFileId, customBasePath);
+      if (selectedTreeFilePath === file.path) {
+        selectedTreeFilePath = null;
+      }
+      if (selectedIds.has(targetFileId)) {
+        const next = new Set(selectedIds);
+        next.delete(targetFileId);
+        selectedIds = next;
+      }
+      if (isMounted) {
+        await Promise.all([fetchData(), fetchFolderTree()]);
+      }
+    } catch {}
+  }
+
   function handleTreeDragOver(e: DragEvent, targetPath: string): void {
     try {
       if (activeTab !== "active") return;
@@ -1640,10 +1675,11 @@
       const newPath = `${parentDir}/${finalName}`;
 
       const oldDocPath = folderToRename.id;
-      await moveFile(
+      await renameItemApi(
         oldDocPath,
         newPath,
-        customBasePath
+        customBasePath,
+        isFolder
       );
       const oldRelPath = oldDocPath.startsWith("docs/")
         ? oldDocPath.slice(5)
@@ -1661,6 +1697,22 @@
         nextExpanded.delete(oldRelPath);
         nextExpanded.add(newRelPath);
         expandedFolderPaths = nextExpanded;
+      }
+      if (selectedTreeFilePath === oldRelPath) {
+        selectedTreeFilePath = newRelPath;
+      }
+      if (selectedIds.has(oldDocPath)) {
+        const nextSelected = new Set(selectedIds);
+        nextSelected.delete(oldDocPath);
+        nextSelected.add(newPath);
+        selectedIds = nextSelected;
+      }
+      if (lastSelectedId === oldDocPath) {
+        lastSelectedId = newPath;
+      }
+      if (isEditorOpen && editorFilePath === oldDocPath) {
+        editorFilePath = newPath;
+        editorFileName = finalName;
       }
       if (!isMounted) return;
       await Promise.all([fetchData(), fetchFolderTree()]);
@@ -2511,6 +2563,10 @@
 
   function handleTreeFilePointerDown(e: PointerEvent, file: DocumentTreeEntry): void {
     if (e.button !== 0 || activeTab !== "active") return;
+    const targetEl = e.target as HTMLElement | null;
+    if (targetEl?.closest("button:not(.flex-1), [role='toolbar'], a, input")) {
+      return;
+    }
     const target = getTreeFileTarget(file);
     activePointerId = e.pointerId;
     pointerThresholdPassed = false;
@@ -3148,7 +3204,7 @@
                       {/if}
                     {:else}
                       <span
-                        class="max-w-[150px] truncate block"
+                        class="max-w-[260px] md:max-w-[340px] {idx === breadcrumbs.length - 1 ? 'max-w-[360px] md:max-w-[480px]' : ''} truncate block"
                         title={crumb.name}>{crumb.name}</span
                       >
                     {/if}
@@ -3170,37 +3226,69 @@
     {@const isFileSelected = selectedTreeFilePath === file.path || selectedIds.has(target.targetFileId)}
     {@const isFileBeingDragged = draggedItemIdSet.has(target.targetFileId)}
 
-    <button
-      type="button"
-      onpointerdown={(e) => handleTreeFilePointerDown(e, file)}
-      draggable={false}
-      ondragstart={(e) => e.preventDefault()}
-      class="group/file relative flex items-center w-full rounded-lg py-1.5 px-1 transition-all duration-150 select-none cursor-pointer text-left {isFileBeingDragged
+    <div
+      class="group/file relative flex items-center w-full rounded-lg transition-all duration-150 {isFileBeingDragged
         ? 'opacity-40 ring-1 ring-primary/40'
         : isFileSelected
           ? 'bg-primary/10 text-primary font-medium'
           : 'text-muted-foreground hover:bg-accent hover:text-foreground'}"
-      onclick={() => selectFileFromTree(file)}
-      title={file.name}
+      onpointerdown={(e) => handleTreeFilePointerDown(e, file)}
+      role="treeitem"
+      tabindex="-1"
+      aria-selected={isFileSelected}
     >
-      <div class="w-5 shrink-0 pointer-events-none"></div>
-
-      <div
-        class="w-5 h-5 flex items-center justify-center shrink-0 pointer-events-none transition-[margin] duration-300 ease-[cubic-bezier(0.2,0,0,1)] {isFolderSidebarOpen
-          ? 'ml-0'
-          : 'ml-[5px]'}"
+      <button
+        type="button"
+        draggable={false}
+        ondragstart={(e) => e.preventDefault()}
+        class="flex-1 flex items-center py-1.5 px-1 min-w-0 select-none cursor-pointer text-left"
+        onclick={() => selectFileFromTree(file)}
+        title={file.name}
       >
-        <VisualIcon class="w-3.5 h-3.5 shrink-0 {visual.colorClass} {visual.fillClass}" />
-      </div>
+        <div class="w-5 shrink-0 pointer-events-none"></div>
 
-      <div
-        class="text-left text-xs whitespace-nowrap overflow-hidden truncate pointer-events-none transition-[opacity,margin,width] duration-300 ease-[cubic-bezier(0.2,0,0,1)] {isFolderSidebarOpen
-          ? 'opacity-100 ml-1.5 flex-1 min-w-0 mr-1'
-          : 'opacity-0 ml-0 w-0'}"
-      >
-        {file.name}
-      </div>
-    </button>
+        <div
+          class="w-5 h-5 flex items-center justify-center shrink-0 pointer-events-none transition-[margin] duration-300 ease-[cubic-bezier(0.2,0,0,1)] {isFolderSidebarOpen
+            ? 'ml-0'
+            : 'ml-[5px]'}"
+        >
+          <VisualIcon class="w-3.5 h-3.5 shrink-0 {visual.colorClass} {visual.fillClass}" />
+        </div>
+
+        <div
+          class="text-left text-xs whitespace-nowrap overflow-hidden truncate pointer-events-none transition-[opacity,margin,width] duration-300 ease-[cubic-bezier(0.2,0,0,1)] {isFolderSidebarOpen
+            ? 'opacity-100 ml-1.5 flex-1 min-w-0 mr-1'
+            : 'opacity-0 ml-0 w-0'}"
+        >
+          {file.name}
+        </div>
+      </button>
+
+      {#if isFolderSidebarOpen}
+        <div
+          role="toolbar"
+          aria-label="File actions"
+          class="absolute right-1.5 flex items-center gap-0.5 transition-[opacity,transform] duration-200 opacity-0 group-hover/file:opacity-100 scale-100 bg-card/95 backdrop-blur-xs pl-1 pr-0.5 py-0.5 rounded-md shadow-xs z-20"
+        >
+          <button
+            class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-foreground transition-colors cursor-pointer"
+            onclick={(e) => openRenameTreeFile(e, file)}
+            title="Rename file"
+            aria-label="Rename file"
+          >
+            <Pencil class="w-3.5 h-3.5" />
+          </button>
+          <button
+            class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-rose-500 transition-colors cursor-pointer"
+            onclick={(e) => deleteTreeFile(e, file)}
+            title="Delete file"
+            aria-label="Delete file"
+          >
+            <Trash2 class="w-3.5 h-3.5" />
+          </button>
+        </div>
+      {/if}
+    </div>
   {/snippet}
 
   {#snippet renderFolderTreeNode(node: FolderTreeNode, depth: number)}
