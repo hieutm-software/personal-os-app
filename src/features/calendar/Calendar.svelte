@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { slide } from "svelte/transition";
   import {
     Calendar,
     CalendarDays,
@@ -97,6 +96,7 @@
     hasValidStart: boolean;
     startDayTimeMs: number;
     endDayTimeMs: number;
+    durationDays: number;
     sortStartMs: number;
     sortEndMs: number;
     startMonth: number;
@@ -401,6 +401,11 @@
       endDayTimeMs = startDayTimeMs;
     }
 
+    const durationDays = Math.max(
+      0,
+      Math.round((endDayTimeMs - startDayTimeMs) / 86400000)
+    );
+
     const sortStartMs = startD ? startD.getTime() : rawCreatedAt;
     const sortEndMs = endD
       ? endD.getTime()
@@ -432,6 +437,7 @@
       hasValidStart,
       startDayTimeMs,
       endDayTimeMs,
+      durationDays,
       sortStartMs,
       sortEndMs,
       startMonth,
@@ -468,23 +474,120 @@
 
     if (dayTimeMs < meta.startDayTimeMs) return false;
 
-    if (recurrence === "DAILY") return true;
-    if (recurrence === "WEEKLY") return meta.startDayOfWeek === dayOfWeek;
-    if (recurrence === "MONTHLY") {
-      const targetDay = Math.min(meta.startDayOfMonth, daysInTargetMonth);
-      return dayOfMonth === targetDay;
+    const durationDays = meta.durationDays;
+
+    if (recurrence === "DAILY") {
+      return true;
     }
-    if (recurrence === "YEARLY") {
-      if (meta.startMonth !== dayMonth) return false;
+
+    if (recurrence === "WEEKLY") {
+      if (durationDays >= 7) return true;
+      const diffDays = (dayOfWeek - meta.startDayOfWeek + 7) % 7;
+      if (diffDays <= durationDays) {
+        const occurrenceStartDate = new Date(dayYear, dayMonth, dayOfMonth - diffDays);
+        return occurrenceStartDate.getTime() >= meta.startDayTimeMs;
+      }
+      return false;
+    }
+
+    if (recurrence === "MONTHLY") {
+      if (durationDays >= daysInTargetMonth) return true;
+
+      const curTargetDay = Math.min(meta.startDayOfMonth, daysInTargetMonth);
+      const curStart = new Date(dayYear, dayMonth, curTargetDay);
+      const curEnd = new Date(dayYear, dayMonth, curTargetDay + durationDays);
+      const curStartMs = curStart.getTime();
+      const curEndMs = curEnd.getTime();
       if (
+        dayTimeMs >= curStartMs &&
+        dayTimeMs <= curEndMs &&
+        curStartMs >= meta.startDayTimeMs
+      ) {
+        return true;
+      }
+
+      if (durationDays > 0) {
+        const prevMonthDate = new Date(dayYear, dayMonth - 1, 1);
+        const prevYear = prevMonthDate.getFullYear();
+        const prevMonth = prevMonthDate.getMonth();
+        const daysInPrevMonth = new Date(prevYear, prevMonth + 1, 0).getDate();
+        const prevTargetDay = Math.min(meta.startDayOfMonth, daysInPrevMonth);
+        const prevStart = new Date(prevYear, prevMonth, prevTargetDay);
+        const prevEnd = new Date(prevYear, prevMonth, prevTargetDay + durationDays);
+        const prevStartMs = prevStart.getTime();
+        const prevEndMs = prevEnd.getTime();
+        if (
+          dayTimeMs >= prevStartMs &&
+          dayTimeMs <= prevEndMs &&
+          prevStartMs >= meta.startDayTimeMs
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    if (recurrence === "YEARLY") {
+      const yearDays = isLeapYearNumber(dayYear) ? 366 : 365;
+      if (durationDays >= yearDays) return true;
+
+      const expectedDayThisYear =
         meta.startMonth === 1 &&
         meta.startDayOfMonth === 29 &&
         !isLeapYearNumber(dayYear)
+          ? 28
+          : meta.startDayOfMonth;
+      const curStart = new Date(
+        dayYear,
+        meta.startMonth,
+        expectedDayThisYear
+      );
+      const curEnd = new Date(
+        dayYear,
+        meta.startMonth,
+        expectedDayThisYear + durationDays
+      );
+      const curStartMs = curStart.getTime();
+      const curEndMs = curEnd.getTime();
+      if (
+        dayTimeMs >= curStartMs &&
+        dayTimeMs <= curEndMs &&
+        curStartMs >= meta.startDayTimeMs
       ) {
-        return dayOfMonth === 28;
+        return true;
       }
-      return meta.startDayOfMonth === dayOfMonth;
+
+      if (durationDays > 0) {
+        const prevYear = dayYear - 1;
+        const expectedDayPrevYear =
+          meta.startMonth === 1 &&
+          meta.startDayOfMonth === 29 &&
+          !isLeapYearNumber(prevYear)
+            ? 28
+            : meta.startDayOfMonth;
+        const prevStart = new Date(
+          prevYear,
+          meta.startMonth,
+          expectedDayPrevYear
+        );
+        const prevEnd = new Date(
+          prevYear,
+          meta.startMonth,
+          expectedDayPrevYear + durationDays
+        );
+        const prevStartMs = prevStart.getTime();
+        const prevEndMs = prevEnd.getTime();
+        if (
+          dayTimeMs >= prevStartMs &&
+          dayTimeMs <= prevEndMs &&
+          prevStartMs >= meta.startDayTimeMs
+        ) {
+          return true;
+        }
+      }
+      return false;
     }
+
     return false;
   }
 
@@ -504,6 +607,14 @@
     } catch {}
   });
 
+  $effect(() => {
+    try {
+      if (!formIsMultiDay && formStartDate) {
+        formEndDate = formStartDate;
+      }
+    } catch {}
+  });
+
   let isViewOnlyEvent = $derived(
     Boolean(
       editingEvent?.source?.startsWith("GOOGLE") ||
@@ -515,7 +626,7 @@
     try {
       if (isViewOnlyEvent) return;
       formRecurrence = val;
-      if (val !== "NONE") {
+      if (val === "DAILY") {
         formIsMultiDay = false;
         formEndDate = formStartDate;
       }
@@ -1219,31 +1330,7 @@
       const gridEndMs = days[gridLength - 1].dayTimeMs;
 
       const normalEventsMap = new Map<string, Event[]>();
-      const dailyRecurring: CachedEventMetadata[] = [];
-      const weeklyRecurringByDay: CachedEventMetadata[][] = [
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-      ];
-      const monthlyRecurring: CachedEventMetadata[] = [];
-      const yearlyRecurringByMonth: CachedEventMetadata[][] = [
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-      ];
+      const recurringList: CachedEventMetadata[] = [];
 
       const allEvents = eventStore.events;
       const groupFilter = selectedGroupId;
@@ -1286,15 +1373,7 @@
             cursor.setDate(cursor.getDate() + 1);
           }
         } else if (meta.startDayTimeMs <= gridEndMs) {
-          if (recurrence === "DAILY") {
-            dailyRecurring.push(meta);
-          } else if (recurrence === "WEEKLY") {
-            weeklyRecurringByDay[meta.startDayOfWeek].push(meta);
-          } else if (recurrence === "MONTHLY") {
-            monthlyRecurring.push(meta);
-          } else if (recurrence === "YEARLY") {
-            yearlyRecurringByMonth[meta.startMonth].push(meta);
-          }
+          recurringList.push(meta);
         }
       }
 
@@ -1305,47 +1384,20 @@
         const normalEvents = normalEventsMap.get(key) || [];
         const recurringEvents: Event[] = [];
 
-        for (let j = 0, len = dailyRecurring.length; j < len; j++) {
-          const meta = dailyRecurring[j];
-          if (dayTimeMs >= meta.startDayTimeMs) {
+        for (let j = 0, len = recurringList.length; j < len; j++) {
+          const meta = recurringList[j];
+          if (
+            doesEventMetadataOccurOnDay(
+              meta,
+              dayTimeMs,
+              dayCell.year,
+              dayCell.month,
+              dayCell.dayOfMonth,
+              dayCell.dayOfWeek,
+              dayCell.daysInMonth
+            )
+          ) {
             recurringEvents.push(meta.event);
-          }
-        }
-
-        const weeklyBucket = weeklyRecurringByDay[dayCell.dayOfWeek];
-        for (let j = 0, len = weeklyBucket.length; j < len; j++) {
-          const meta = weeklyBucket[j];
-          if (dayTimeMs >= meta.startDayTimeMs) {
-            recurringEvents.push(meta.event);
-          }
-        }
-
-        for (let j = 0, len = monthlyRecurring.length; j < len; j++) {
-          const meta = monthlyRecurring[j];
-          if (dayTimeMs >= meta.startDayTimeMs) {
-            const targetDay =
-              meta.startDayOfMonth < dayCell.daysInMonth
-                ? meta.startDayOfMonth
-                : dayCell.daysInMonth;
-            if (dayCell.dayOfMonth === targetDay) {
-              recurringEvents.push(meta.event);
-            }
-          }
-        }
-
-        const yearlyBucket = yearlyRecurringByMonth[dayCell.month];
-        for (let j = 0, len = yearlyBucket.length; j < len; j++) {
-          const meta = yearlyBucket[j];
-          if (dayTimeMs >= meta.startDayTimeMs) {
-            const expectedDay =
-              meta.startMonth === 1 &&
-              meta.startDayOfMonth === 29 &&
-              !dayCell.isLeapYear
-                ? 28
-                : meta.startDayOfMonth;
-            if (dayCell.dayOfMonth === expectedDay) {
-              recurringEvents.push(meta.event);
-            }
           }
         }
 
@@ -1418,6 +1470,17 @@
       <Toolbar>
         {#snippet search()}
           <div class="flex items-center gap-3 sm:gap-4 min-w-0">
+            {#if viewMode === "grid"}
+              <div class="flex items-center min-w-[130px] sm:min-w-[140px] shrink-0">
+                <h2
+                  class="text-sm sm:text-base font-semibold tracking-tight capitalize shrink-0 text-foreground"
+                >
+                  {MONTH_NAMES[currentMonth.getMonth()]}
+                  {currentMonth.getFullYear()}
+                </h2>
+              </div>
+            {/if}
+
             <TabSwitcher
               tabs={[
                 { value: "grid", label: "Calendar", icon: CalendarDays },
@@ -1433,17 +1496,8 @@
               }}
             />
 
-            {#if viewMode === "grid"}
-              <div class="flex items-center sm:max-w-xs">
-                <h2
-                  class="text-sm sm:text-base font-semibold tracking-tight capitalize shrink-0 text-foreground"
-                >
-                  {MONTH_NAMES[currentMonth.getMonth()]}
-                  {currentMonth.getFullYear()}
-                </h2>
-              </div>
-            {:else}
-              <div class="flex items-center gap-4">
+            {#if viewMode === "list"}
+              <div class="flex items-center gap-4 flex-1 min-w-0">
                 {#if selectedDate}
                   <h2
                     class="text-sm sm:text-base font-semibold tracking-tight capitalize shrink-0 text-foreground"
@@ -2310,14 +2364,14 @@
       <div class="flex flex-col justify-center">
         <div class="flex items-center gap-3 overflow-hidden">
           <span
-            class="text-sm text-muted-foreground w-16 {formRecurrence !==
-              'NONE' && !isViewOnlyEvent
+            class="text-sm text-muted-foreground w-16 {formRecurrence ===
+              'DAILY' && !isViewOnlyEvent
               ? 'opacity-50'
               : ''}">Multi-day</span
           >
           <Switch
             bind:checked={formIsMultiDay}
-            disabled={formRecurrence !== "NONE" || isViewOnlyEvent}
+            disabled={formRecurrence === "DAILY" || isViewOnlyEvent}
             class={isViewOnlyEvent ? "disabled:opacity-100!" : ""}
           />
         </div>
@@ -2362,33 +2416,33 @@
       </FormField>
     </div>
 
-    {#if formIsMultiDay}
-      <div transition:slide={{ duration: 200 }}>
-        <div class="grid grid-cols-2 gap-4 pt-4">
+    <div class="grid grid-cols-2 gap-4 pt-4">
+      <div class={formIsMultiDay ? "" : "col-span-2"}>
+        <DatePicker
+          bind:value={formStartDate}
+          placeholder={formIsMultiDay ? "Start Date" : "Date"}
+          disabled={isViewOnlyEvent}
+          class={isViewOnlyEvent ? "opacity-100!" : ""}
+        />
+      </div>
+      {#if formIsMultiDay}
+        <div class="relative [&>div]:w-full">
           <DatePicker
-            bind:value={formStartDate}
-            placeholder="Start Date"
+            bind:value={formEndDate}
+            placeholder="End Date"
             disabled={isViewOnlyEvent}
             class={isViewOnlyEvent ? "opacity-100!" : ""}
           />
-          <div class="relative [&>div]:w-full">
-            <DatePicker
-              bind:value={formEndDate}
-              placeholder="End Date"
-              disabled={isViewOnlyEvent}
-              class={isViewOnlyEvent ? "opacity-100!" : ""}
-            />
-            <input
-              type="text"
-              bind:this={endDateInputRef}
-              class="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
-              tabindex="-1"
-              aria-hidden="true"
-            />
-          </div>
+          <input
+            type="text"
+            bind:this={endDateInputRef}
+            class="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+            tabindex="-1"
+            aria-hidden="true"
+          />
         </div>
-      </div>
-    {/if}
+      {/if}
+    </div>
 
     <div>
       <div class="grid grid-cols-2 gap-4 pt-4">
