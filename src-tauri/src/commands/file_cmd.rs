@@ -757,6 +757,9 @@ pub async fn create_backup_zip(
         let _ = crate::services::os_auth_service::get_vault_key(&app);
 
         let final_dest_path = std::path::PathBuf::from(&dest_zip_path);
+        if let Some(parent) = final_dest_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let trimmed_pwd = password.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
         let has_password = trimmed_pwd.is_some();
 

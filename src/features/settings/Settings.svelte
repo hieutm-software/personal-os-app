@@ -56,6 +56,9 @@
     pickDocumentsFolderApi,
     getDefaultDocumentDir,
     resetDocumentsFolderApi,
+    getDefaultBackupDir,
+    pickBackupFolderApi,
+    resetBackupFolderApi,
     isPlatformPathValid,
     formatErrorMessage,
   } from "./api";
@@ -127,6 +130,9 @@
 
   let documentsPath = $state("");
   let isPickingFolder = $state(false);
+
+  let backupPath = $state("");
+  let isPickingBackupFolder = $state(false);
 
   function safeGetStorageItem(key: string): string | null {
     try {
@@ -304,8 +310,16 @@
         ? `personal_os_backup_${dateStr}.posbackup`
         : `personal_os_full_backup_${dateStr}.zip`;
 
+      const targetDir = backupPath && isPlatformPathValid(backupPath)
+        ? backupPath.replace(/[/\\]+$/, "")
+        : (documentsPath && isPlatformPathValid(documentsPath) ? documentsPath.replace(/[/\\]+$/, "") : "");
+
+      const defaultSavePath = targetDir
+        ? `${targetDir}/${defaultFileName}`
+        : defaultFileName;
+
       const selected = await save({
-        defaultPath: defaultFileName,
+        defaultPath: defaultSavePath,
         filters: isEncrypted
           ? [
               {
@@ -452,6 +466,8 @@
       if (!isMounted) return;
       const docsDir = safeGetStorageItem("documents_path");
       if (docsDir && isPlatformPathValid(docsDir)) documentsPath = docsDir;
+      const bDir = safeGetStorageItem("backup_path");
+      if (bDir && isPlatformPathValid(bDir)) backupPath = bDir;
       loadICalConfig();
       completeProgress();
 
@@ -568,16 +584,28 @@
     const handleStorage = (event: StorageEvent) => {
       if (event.key === "synced_ical_urls") {
         syncedUrls = parseStringArrayJson(safeGetStorageItem("synced_ical_urls"));
+      } else if (event.key === "documents_path") {
+        const val = event.newValue;
+        if (val && isPlatformPathValid(val)) documentsPath = val;
+      } else if (event.key === "backup_path") {
+        const val = event.newValue;
+        if (val && isPlatformPathValid(val)) backupPath = val;
       }
     };
 
     const handleBackupRestored = () => {
       loadICalConfig();
+      const docsDir = safeGetStorageItem("documents_path");
+      if (docsDir && isPlatformPathValid(docsDir)) documentsPath = docsDir;
+      const bDir = safeGetStorageItem("backup_path");
+      if (bDir && isPlatformPathValid(bDir)) backupPath = bDir;
     };
 
     const handlePathChanged = () => {
       const docsDir = safeGetStorageItem("documents_path");
       if (docsDir && isPlatformPathValid(docsDir)) documentsPath = docsDir;
+      const bDir = safeGetStorageItem("backup_path");
+      if (bDir && isPlatformPathValid(bDir)) backupPath = bDir;
     };
 
     try {
@@ -602,6 +630,17 @@
         getDefaultDocumentDir()
           .then((dir) => {
             if (isMounted) documentsPath = dir;
+          })
+          .catch(() => {});
+      }
+
+      const savedBackupPath = safeGetStorageItem("backup_path");
+      if (savedBackupPath && isPlatformPathValid(savedBackupPath)) {
+        backupPath = savedBackupPath;
+      } else {
+        getDefaultBackupDir()
+          .then((dir) => {
+            if (isMounted) backupPath = dir;
           })
           .catch(() => {});
       }
@@ -638,6 +677,27 @@
       const path = await resetDocumentsFolderApi();
       if (!isMounted) return;
       documentsPath = path;
+    } catch {}
+  }
+
+  async function pickBackupFolder() {
+    try {
+      isPickingBackupFolder = true;
+      const selected = await pickBackupFolderApi(backupPath);
+      if (!isMounted) return;
+      if (selected) {
+        backupPath = selected;
+      }
+    } catch {} finally {
+      if (isMounted) isPickingBackupFolder = false;
+    }
+  }
+
+  async function resetBackupFolder() {
+    try {
+      const path = await resetBackupFolderApi();
+      if (!isMounted) return;
+      backupPath = path;
     } catch {}
   }
 
@@ -876,55 +936,110 @@
     <!-- Category 2: Storage & File Locations -->
     <div class="space-y-3.5">
       {@render sectionHeader(HardDrive, "Storage & File Locations", "text-purple-500")}
-      <!-- Documents Storage Path -->
-      <div
-        class="flex flex-col rounded-2xl card-aura-responsive border-premium-border shadow-2xl overflow-hidden"
-      >
-        <div class="flex flex-col space-y-1 p-5 border-b border-premium-border bg-transparent">
-          <div class="flex items-center gap-2.5">
-            <div class="p-1.5 rounded-md bg-purple-500/10">
-              <HardDrive class="w-4 h-4 text-purple-500" />
-            </div>
-            <h3 class="font-semibold leading-none tracking-tight text-sm">
-              Documents Storage Path
-            </h3>
-          </div>
-          <p class="text-xs text-muted-foreground pl-8">
-            Default location for local documents and files.
-          </p>
-        </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <!-- Documents Storage Path -->
         <div
-          class="p-5 flex-1 flex flex-col justify-center shadow-[inset_0_0.25rem_1.25rem_rgba(0,0,0,0.02)] dark:shadow-none rounded-b-2xl"
+          class="flex flex-col rounded-2xl card-aura-responsive border-premium-border shadow-2xl overflow-hidden"
         >
-          <div class="flex items-center gap-2 w-full">
-            <div class="flex-1 min-w-0">
-              <Input
-                bind:value={documentsPath}
-                readonly
-                class="bg-muted/50 text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 cursor-text select-all text-xs"
-                placeholder="Loading default path..."
-              />
+          <div class="flex flex-col space-y-1 p-5 border-b border-premium-border bg-transparent">
+            <div class="flex items-center gap-2.5">
+              <div class="p-1.5 rounded-md bg-purple-500/10">
+                <HardDrive class="w-4 h-4 text-purple-500" />
+              </div>
+              <h3 class="font-semibold leading-none tracking-tight text-sm">
+                Documents Storage Path
+              </h3>
             </div>
+            <p class="text-xs text-muted-foreground pl-8">
+              Default location for local documents and files.
+            </p>
+          </div>
+          <div
+            class="p-5 flex-1 flex flex-col justify-center shadow-[inset_0_0.25rem_1.25rem_rgba(0,0,0,0.02)] dark:shadow-none rounded-b-2xl"
+          >
+            <div class="flex items-center gap-2 w-full">
+              <div class="flex-1 min-w-0">
+                <Input
+                  bind:value={documentsPath}
+                  readonly
+                  class="bg-muted/50 text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 cursor-text select-all text-xs"
+                  placeholder="Loading default path..."
+                />
+              </div>
 
-            <Button
-              variant="outline"
-              size="sm"
-              class="shrink-0 h-9 text-xs font-medium"
-              onclick={pickDocumentsFolder}
-              disabled={isPickingFolder}
-            >
-              {isPickingFolder ? "..." : "Browse..."}
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="shrink-0 h-9 text-xs font-medium"
+                onclick={pickDocumentsFolder}
+                disabled={isPickingFolder}
+              >
+                {isPickingFolder ? "..." : "Browse..."}
+              </Button>
 
-            <Button
-              variant="outline"
-              size="icon"
-              class="shrink-0 h-9 w-9"
-              onclick={resetDocumentsFolder}
-              title="Reset to Default"
-            >
-              <RotateCcw class="w-3.5 h-3.5" />
-            </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                class="shrink-0 h-9 w-9"
+                onclick={resetDocumentsFolder}
+                title="Reset to Default"
+              >
+                <RotateCcw class="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Backup Storage Path -->
+        <div
+          class="flex flex-col rounded-2xl card-aura-responsive border-premium-border shadow-2xl overflow-hidden"
+        >
+          <div class="flex flex-col space-y-1 p-5 border-b border-premium-border bg-transparent">
+            <div class="flex items-center gap-2.5">
+              <div class="p-1.5 rounded-md bg-green-500/10">
+                <DatabaseBackup class="w-4 h-4 text-green-500" />
+              </div>
+              <h3 class="font-semibold leading-none tracking-tight text-sm">
+                Backup Storage Path
+              </h3>
+            </div>
+            <p class="text-xs text-muted-foreground pl-8">
+              Default location for saving exported backup archives.
+            </p>
+          </div>
+          <div
+            class="p-5 flex-1 flex flex-col justify-center shadow-[inset_0_0.25rem_1.25rem_rgba(0,0,0,0.02)] dark:shadow-none rounded-b-2xl"
+          >
+            <div class="flex items-center gap-2 w-full">
+              <div class="flex-1 min-w-0">
+                <Input
+                  bind:value={backupPath}
+                  readonly
+                  class="bg-muted/50 text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 cursor-text select-all text-xs"
+                  placeholder="Loading default backup path..."
+                />
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                class="shrink-0 h-9 text-xs font-medium"
+                onclick={pickBackupFolder}
+                disabled={isPickingBackupFolder}
+              >
+                {isPickingBackupFolder ? "..." : "Browse..."}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="icon"
+                class="shrink-0 h-9 w-9"
+                onclick={resetBackupFolder}
+                title="Reset to Default"
+              >
+                <RotateCcw class="w-3.5 h-3.5" />
+              </Button>
+            </div>
           </div>
         </div>
       </div>
