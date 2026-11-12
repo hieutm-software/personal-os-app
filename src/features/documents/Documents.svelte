@@ -1667,14 +1667,15 @@
         return;
       }
 
-      const lastSlashIndex = folderToRename.id.lastIndexOf("/");
+      const normalizedOldId = folderToRename.id.replace(/\\/g, "/");
+      const lastSlashIndex = normalizedOldId.lastIndexOf("/");
       const parentDir =
         lastSlashIndex !== -1
-          ? folderToRename.id.substring(0, lastSlashIndex)
+          ? normalizedOldId.substring(0, lastSlashIndex)
           : "docs";
       const newPath = `${parentDir}/${finalName}`;
 
-      const oldDocPath = folderToRename.id;
+      const oldDocPath = normalizedOldId;
       await renameItemApi(
         oldDocPath,
         newPath,
@@ -1692,14 +1693,22 @@
       } else if (currentPath.startsWith(`${oldRelPath}/`)) {
         currentPath = `${newRelPath}${currentPath.substring(oldRelPath.length)}`;
       }
-      if (expandedFolderPaths.has(oldRelPath)) {
-        const nextExpanded = new Set(expandedFolderPaths);
-        nextExpanded.delete(oldRelPath);
-        nextExpanded.add(newRelPath);
-        expandedFolderPaths = nextExpanded;
+      const nextExpanded = new Set<string>();
+      for (const p of expandedFolderPaths) {
+        if (p === oldRelPath) {
+          nextExpanded.add(newRelPath);
+        } else if (p.startsWith(`${oldRelPath}/`)) {
+          nextExpanded.add(`${newRelPath}${p.substring(oldRelPath.length)}`);
+        } else {
+          nextExpanded.add(p);
+        }
       }
+      expandedFolderPaths = nextExpanded;
+
       if (selectedTreeFilePath === oldRelPath) {
         selectedTreeFilePath = newRelPath;
+      } else if (selectedTreeFilePath && selectedTreeFilePath.startsWith(`${oldRelPath}/`)) {
+        selectedTreeFilePath = `${newRelPath}${selectedTreeFilePath.substring(oldRelPath.length)}`;
       }
       if (selectedIds.has(oldDocPath)) {
         const nextSelected = new Set(selectedIds);

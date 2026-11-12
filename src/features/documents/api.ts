@@ -85,6 +85,26 @@ export async function uploadFileFromPath(
   }
 }
 
+export function extractErrorMessage(err: unknown): string {
+  if (!err) return "";
+  if (typeof err === "string") return err.trim();
+  if (err instanceof Error) return err.message.trim();
+  if (typeof err === "object") {
+    const obj = err as Record<string, unknown>;
+    if (typeof obj.message === "string" && obj.message.trim()) {
+      return obj.message.trim();
+    }
+    if (typeof obj.error === "string" && obj.error.trim()) {
+      return obj.error.trim();
+    }
+    try {
+      const json = JSON.stringify(err);
+      if (json && json !== "{}") return json;
+    } catch {}
+  }
+  return String(err);
+}
+
 export async function moveFile(
   sourcePath: string,
   targetPath: string,
@@ -101,7 +121,7 @@ export async function moveFile(
     });
     if (!silent) toastState.add("success", "Moved successfully");
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err || "");
+    const msg = extractErrorMessage(err);
     if (!silent) toastState.add("error", msg ? `Failed to move item: ${msg}` : "Failed to move item");
     throw err;
   }
@@ -123,7 +143,7 @@ export async function renameItemApi(
     });
     toastState.add("success", isFolder ? "Folder renamed successfully" : "File renamed successfully");
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err || "");
+    const msg = extractErrorMessage(err);
     toastState.add("error", msg ? `Failed to rename: ${msg}` : (isFolder ? "Failed to rename folder" : "Failed to rename file"));
     throw err;
   }

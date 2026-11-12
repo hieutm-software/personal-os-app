@@ -692,17 +692,38 @@ pub async fn move_file(
             return Err(AppError::Unknown("An item with the same name already exists".to_string()));
         }
 
+        #[cfg(target_os = "windows")]
+        if is_same_file && src != dest {
+            let parent = dest.parent().unwrap_or(&dest);
+            let temp_name = format!(
+                ".__case_tmp_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            );
+            let temp_path = parent.join(temp_name);
+            if fs::rename(&src, &temp_path).is_ok() {
+                if fs::rename(&temp_path, &dest).is_ok() {
+                    return Ok(());
+                } else {
+                    let _ = fs::rename(&temp_path, &src);
+                }
+            }
+        }
+
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
 
         let mut last_err = None;
-        for _attempt in 0..5 {
+        for attempt in 0..8 {
             match fs::rename(&src, &dest) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     last_err = Some(e);
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1)));
                 }
             }
         }
@@ -713,7 +734,13 @@ pub async fn move_file(
             return Ok(());
         }
 
-        Err(AppError::from(last_err.unwrap()))
+        let err = last_err.unwrap();
+        let err_msg = match err.raw_os_error() {
+            Some(5) => "Access denied. The folder or a file inside it may be in use by another program.".to_string(),
+            Some(32) => "The item is currently being used by another process.".to_string(),
+            _ => err.to_string(),
+        };
+        Err(AppError::Unknown(err_msg))
     })
     .await?
 }
