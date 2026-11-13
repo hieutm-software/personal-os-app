@@ -106,8 +106,72 @@ export function renderSanitizedMarkdown(content: string): string {
   }
 }
 
-export function mountMarkdown(node: HTMLElement, htmlContent: string) {
+export type MountMarkdownOptions = {
+  html: string;
+  onToggleCheckbox?: (index: number, checked: boolean) => void;
+};
+
+const TASK_LINE_REGEX = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\](?:[ \t]|$).*)$/;
+const FENCE_LINE_REGEX = /^[ \t]*(`{3,}|~{3,})/;
+
+export function toggleMarkdownCheckbox(
+  markdown: string,
+  targetIndex: number,
+  checked: boolean
+): string {
+  const lineEnding = markdown.includes('\r\n') ? '\r\n' : '\n';
+  const lines = markdown.split(/\r?\n/);
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLen = 0;
+  let currentCheckboxIndex = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = line.match(FENCE_LINE_REGEX);
+    if (fenceMatch) {
+      const marker = fenceMatch[1];
+      if (!inFence) {
+        inFence = true;
+        fenceChar = marker[0];
+        fenceLen = marker.length;
+      } else if (marker[0] === fenceChar && marker.length >= fenceLen) {
+        inFence = false;
+      }
+      continue;
+    }
+    if (inFence) continue;
+
+    const taskMatch = line.match(TASK_LINE_REGEX);
+    if (taskMatch) {
+      if (currentCheckboxIndex === targetIndex) {
+        lines[i] = `${taskMatch[1]}${checked ? 'x' : ' '}${taskMatch[3]}`;
+        return lines.join(lineEnding);
+      }
+      currentCheckboxIndex++;
+    }
+  }
+
+  return markdown;
+}
+
+export function mountMarkdown(node: HTMLElement, param: string | MountMarkdownOptions) {
   const copyButtonTimers = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>();
+  let currentOnToggleCheckbox = typeof param === 'string' ? undefined : param.onToggleCheckbox;
+  let currentHtml = typeof param === 'string' ? param : param.html;
+
+  function handleCheckboxChange(event: Event) {
+    try {
+      const target = event.target as HTMLElement | null;
+      if (!(target instanceof HTMLInputElement)) return;
+      const idxAttr = target.getAttribute('data-task-checkbox-index');
+      if (idxAttr === null || !currentOnToggleCheckbox) return;
+      const index = Number.parseInt(idxAttr, 10);
+      if (!Number.isNaN(index)) {
+        currentOnToggleCheckbox(index, target.checked);
+      }
+    } catch {}
+  }
 
   async function handlePreviewClick(event: MouseEvent) {
     try {
@@ -200,13 +264,32 @@ export function mountMarkdown(node: HTMLElement, htmlContent: string) {
       }
 
       const taskInputs = node.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"]');
+      const isInteractive = typeof currentOnToggleCheckbox === 'function';
       for (let i = 0; i < taskInputs.length; i++) {
         const inp = taskInputs[i];
         const li = inp.parentElement;
         if (li) {
           li.classList.add('list-none', 'flex', 'items-start', 'gap-2', '!pl-0');
+          const contentWrap = document.createElement('div');
+          contentWrap.className = 'flex-1 min-w-0 break-words [&>p]:my-0';
+          let sibling = inp.nextSibling;
+          while (sibling) {
+            const next = sibling.nextSibling;
+            contentWrap.appendChild(sibling);
+            sibling = next;
+          }
+          li.appendChild(contentWrap);
         }
-        inp.classList.add('mt-1', 'rounded', 'accent-indigo-500', 'cursor-default');
+        if (isInteractive) {
+          inp.disabled = false;
+          inp.removeAttribute('disabled');
+          inp.setAttribute('data-task-checkbox-index', String(i));
+          inp.classList.add('mt-1', 'shrink-0', 'rounded', 'accent-indigo-500', 'cursor-pointer');
+        } else {
+          inp.disabled = true;
+          inp.removeAttribute('data-task-checkbox-index');
+          inp.classList.add('mt-1', 'shrink-0', 'rounded', 'accent-indigo-500', 'cursor-default');
+        }
       }
     } catch {
       node.replaceChildren();
@@ -214,14 +297,23 @@ export function mountMarkdown(node: HTMLElement, htmlContent: string) {
   }
 
   node.addEventListener('click', handlePreviewClick);
-  renderContent(htmlContent);
+  node.addEventListener('change', handleCheckboxChange);
+  renderContent(currentHtml);
 
   return {
-    update(nextHtml: string) {
-      renderContent(nextHtml);
+    update(nextParam: string | MountMarkdownOptions) {
+      const nextHtml = typeof nextParam === 'string' ? nextParam : nextParam.html;
+      const nextToggle = typeof nextParam === 'string' ? undefined : nextParam.onToggleCheckbox;
+      const interactivityChanged = Boolean(currentOnToggleCheckbox) !== Boolean(nextToggle);
+      currentOnToggleCheckbox = nextToggle;
+      if (nextHtml !== currentHtml || interactivityChanged) {
+        currentHtml = nextHtml;
+        renderContent(nextHtml);
+      }
     },
     destroy() {
       node.removeEventListener('click', handlePreviewClick);
+      node.removeEventListener('change', handleCheckboxChange);
       for (const timer of copyButtonTimers.values()) {
         clearTimeout(timer);
       }

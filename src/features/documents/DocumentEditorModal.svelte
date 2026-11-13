@@ -17,7 +17,11 @@
     Copy,
     Check,
   } from "lucide-svelte";
-  import { renderSanitizedMarkdown, mountMarkdown } from "../../shared/utils/markdown";
+  import {
+    renderSanitizedMarkdown,
+    mountMarkdown,
+    toggleMarkdownCheckbox,
+  } from "../../shared/utils/markdown";
   import { readTextFile, writeTextFile, moveFile } from "./api";
   import { toastState } from "../../shared/toast.svelte";
   import TabSwitcher from "../../shared/ui/TabSwitcher.svelte";
@@ -264,6 +268,10 @@
   const charCount = $derived(content.length);
 
   const sanitizedPreviewHtml = $derived(renderSanitizedMarkdown(content));
+
+  function handlePreviewCheckboxToggle(index: number, checked: boolean) {
+    content = toggleMarkdownCheckbox(content, index, checked);
+  }
 
   $effect(() => {
     if (isOpen && filePath) {
@@ -1156,7 +1164,10 @@
                 : editorMode === 'split'
                   ? 'w-full h-1/2 md:w-1/2 md:h-full p-4 md:p-6 bg-muted/10'
                   : 'w-full h-full p-4 md:p-8'}"
-              use:mountMarkdown={sanitizedPreviewHtml}
+              use:mountMarkdown={{
+                html: sanitizedPreviewHtml,
+                onToggleCheckbox: handlePreviewCheckboxToggle,
+              }}
             ></div>
           </div>
         {/if}
