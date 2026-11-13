@@ -177,7 +177,29 @@ export function mountMarkdown(node: HTMLElement, param: string | MountMarkdownOp
     try {
       const target = event.target as HTMLElement | null;
       const copyBtn = target?.closest<HTMLButtonElement>('button[data-copy-code]');
-      if (!copyBtn) return;
+      if (!copyBtn) {
+        if (currentOnToggleCheckbox && target) {
+          if (target.closest('a, button, input')) return;
+          const taskContent = target.closest<HTMLElement>('[data-task-content-index]');
+          if (!taskContent) return;
+          const ownerLi = taskContent.closest('li');
+          if (!ownerLi || target.closest('li') !== ownerLi) return;
+          const selection = window.getSelection();
+          if (selection && selection.toString().length > 0) return;
+
+          const idxAttr = taskContent.getAttribute('data-task-content-index');
+          if (idxAttr === null) return;
+          const index = Number.parseInt(idxAttr, 10);
+          if (Number.isNaN(index)) return;
+          const checkbox = ownerLi.querySelector<HTMLInputElement>(
+            `input[type="checkbox"][data-task-checkbox-index="${index}"]`
+          );
+          if (!checkbox) return;
+          checkbox.checked = !checkbox.checked;
+          currentOnToggleCheckbox(index, checkbox.checked);
+        }
+        return;
+      }
 
       event.preventDefault();
       event.stopPropagation();
@@ -270,9 +292,20 @@ export function mountMarkdown(node: HTMLElement, param: string | MountMarkdownOp
         const li = inp.parentElement;
         if (li) {
           li.classList.add('list-none', 'flex', 'items-start', 'gap-2', '!pl-0');
+
+          const checkboxWrap = document.createElement('span');
+          checkboxWrap.className = 'inline-flex h-[1.75em] items-center shrink-0';
+          li.insertBefore(checkboxWrap, inp);
+          checkboxWrap.appendChild(inp);
+
           const contentWrap = document.createElement('div');
-          contentWrap.className = 'flex-1 min-w-0 break-words [&>p]:my-0';
-          let sibling = inp.nextSibling;
+          contentWrap.className = isInteractive
+            ? 'flex-1 min-w-0 break-words [&>p]:my-0 cursor-pointer select-text'
+            : 'flex-1 min-w-0 break-words [&>p]:my-0';
+          if (isInteractive) {
+            contentWrap.setAttribute('data-task-content-index', String(i));
+          }
+          let sibling = checkboxWrap.nextSibling;
           while (sibling) {
             const next = sibling.nextSibling;
             contentWrap.appendChild(sibling);
@@ -284,11 +317,11 @@ export function mountMarkdown(node: HTMLElement, param: string | MountMarkdownOp
           inp.disabled = false;
           inp.removeAttribute('disabled');
           inp.setAttribute('data-task-checkbox-index', String(i));
-          inp.classList.add('mt-1', 'shrink-0', 'rounded', 'accent-indigo-500', 'cursor-pointer');
+          inp.classList.add('!m-0', 'h-4', 'w-4', 'rounded', 'accent-indigo-500', 'cursor-pointer');
         } else {
           inp.disabled = true;
           inp.removeAttribute('data-task-checkbox-index');
-          inp.classList.add('mt-1', 'shrink-0', 'rounded', 'accent-indigo-500', 'cursor-default');
+          inp.classList.add('!m-0', 'h-4', 'w-4', 'rounded', 'accent-indigo-500', 'cursor-default');
         }
       }
     } catch {
