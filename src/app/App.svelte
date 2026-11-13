@@ -303,7 +303,7 @@
   async function executeAutoCleanup(): Promise<void> {
     try {
       if (!isComponentMounted) return;
-      autoCleanupStore.init();
+      await autoCleanupStore.init();
       const cleanupConfig = autoCleanupStore.config;
 
       const initPromises: Promise<void>[] = [];
@@ -351,6 +351,7 @@
     isComponentMounted = true;
     let pollerIntervalId: ReturnType<typeof setInterval> | null = null;
     let autoCleanupTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let autoCleanupIntervalId: ReturnType<typeof setInterval> | null = null;
     let pollTickCounter = 0;
 
     const handleWaterReminderChange = (): void => {
@@ -387,6 +388,9 @@
       autoCleanupTimeoutId = setTimeout(() => {
         executeAutoCleanup().catch(() => {});
       }, AUTO_CLEANUP_DELAY_MS);
+      autoCleanupIntervalId = setInterval(() => {
+        executeAutoCleanup().catch(() => {});
+      }, ONE_HOUR_MS);
 
       window.addEventListener("water-reminder-changed", handleWaterReminderChange);
       window.addEventListener("execute-auto-cleanup", handleAutoCleanupRequest);
@@ -401,6 +405,10 @@
       if (autoCleanupTimeoutId !== null) {
         clearTimeout(autoCleanupTimeoutId);
         autoCleanupTimeoutId = null;
+      }
+      if (autoCleanupIntervalId !== null) {
+        clearInterval(autoCleanupIntervalId);
+        autoCleanupIntervalId = null;
       }
       window.removeEventListener("water-reminder-changed", handleWaterReminderChange);
       window.removeEventListener("execute-auto-cleanup", handleAutoCleanupRequest);

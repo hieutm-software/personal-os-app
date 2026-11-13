@@ -518,7 +518,7 @@ export async function runManualCleanup(): Promise<{
   totalCleaned: number;
 }> {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-  autoCleanupStore.init();
+  await autoCleanupStore.init();
   const cfg = autoCleanupStore.config;
 
   const initPromises: Promise<void>[] = [];
