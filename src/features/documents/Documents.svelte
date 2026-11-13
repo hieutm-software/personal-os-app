@@ -2040,6 +2040,7 @@
     item: MixedItem,
     suppressToast = false
   ): Promise<void> {
+    if (activeTab === "trash" && currentPath !== "root") return;
     try {
       const prev = fsItems;
       fsItems = fsItems.filter((entry) => entry.id !== item.id);
@@ -2086,6 +2087,7 @@
   }
 
   function permDelete(item: MixedItem): void {
+    if (activeTab === "trash" && currentPath !== "root") return;
     try {
       confirmDialog = {
         isOpen: true,
@@ -2102,6 +2104,7 @@
   async function bulkAction(
     action: "softDelete" | "restore" | "permDelete"
   ): Promise<void> {
+    if (activeTab === "trash" && currentPath !== "root") return;
     try {
       const itemsToProcess =
         selectedIds.size > 0
@@ -2839,32 +2842,34 @@
               <FolderOpen class="w-4 h-4" />
               <span class="hidden sm:inline">Open in Explorer</span>
             </Button>
-            <Button
-              variant="success-outline"
-              size="sm"
-              onclick={() => bulkAction("restore")}
-              disabled={itemsToShow.length === 0}
-            >
-              <RefreshCcw class="w-4 h-4" />
-              <span class="hidden sm:inline">
-                {selectedIds.size > 0
-                  ? `Restore (${selectedIds.size})`
-                  : "Restore All"}
-              </span>
-            </Button>
-            <Button
-              variant="destructive-outline"
-              size="sm"
-              onclick={() => bulkAction("permDelete")}
-              disabled={itemsToShow.length === 0}
-            >
-              <Trash2 class="w-4 h-4" />
-              <span class="hidden sm:inline">
-                {selectedIds.size > 0
-                  ? `Delete (${selectedIds.size})`
-                  : "Delete All"}
-              </span>
-            </Button>
+            {#if currentPath === "root"}
+              <Button
+                variant="success-outline"
+                size="sm"
+                onclick={() => bulkAction("restore")}
+                disabled={itemsToShow.length === 0}
+              >
+                <RefreshCcw class="w-4 h-4" />
+                <span class="hidden sm:inline">
+                  {selectedIds.size > 0
+                    ? `Restore (${selectedIds.size})`
+                    : "Restore All"}
+                </span>
+              </Button>
+              <Button
+                variant="destructive-outline"
+                size="sm"
+                onclick={() => bulkAction("permDelete")}
+                disabled={itemsToShow.length === 0}
+              >
+                <Trash2 class="w-4 h-4" />
+                <span class="hidden sm:inline">
+                  {selectedIds.size > 0
+                    ? `Delete (${selectedIds.size})`
+                    : "Delete All"}
+                </span>
+              </Button>
+            {/if}
           {/if}
         {/snippet}
       </Toolbar>
@@ -3136,7 +3141,7 @@
                           }}
                           title="Delete"
                         />
-                      {:else if activeTab === "trash"}
+                      {:else if activeTab === "trash" && currentPath === "root"}
                         <ActionButton
                           variant="restore"
                           icon={RefreshCcw}
